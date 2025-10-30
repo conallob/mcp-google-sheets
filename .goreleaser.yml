@@ -1,0 +1,77 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+    - go mod download
+
+builds:
+  - id: mcp-google-sheets
+    main: ./cmd/mcp-google-sheets
+    binary: mcp-google-sheets
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+archives:
+  - id: default
+    format: tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: 'checksums.txt'
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^ci:'
+      - Merge pull request
+      - Merge branch
+
+brews:
+  - name: mcp-google-sheets
+    repository:
+      owner: conallob
+      name: homebrew-taps
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/conallob/mcp-google-sheets
+    description: "A local MCP server for natively accessing and editing Google Sheets via its API"
+    license: "BSD-3-Clause"
+    install: |
+      bin.install "mcp-google-sheets"
+    test: |
+      system "#{bin}/mcp-google-sheets", "--version"
+
+release:
+  github:
+    owner: conallob
+    name: mcp-google-sheets
+  draft: false
+  prerelease: auto
+  name_template: "v{{.Version}}"
