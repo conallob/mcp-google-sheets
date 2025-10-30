@@ -90,7 +90,7 @@ brews:
     # Repository to push the Homebrew tap to
     repository:
       owner: conallob
-      name: homebrew-taps
+      name: homebrew-tap
       branch: main
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
 
