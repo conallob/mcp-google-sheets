@@ -1,0 +1,153 @@
+# GoReleaser configuration for mcp-google-sheets
+version: 2
+
+before:
+  hooks:
+    # Ensure dependencies are up to date
+    - go mod tidy
+    - go mod download
+
+builds:
+  - id: mcp-google-sheets
+    main: ./main.go
+    binary: mcp-google-sheets
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    # Ignore certain platform combinations
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X main.serverVersion={{.Version}}
+    flags:
+      - -trimpath
+
+archives:
+  - id: default
+    format: tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - LICENSE
+      - README.md
+      - SETUP.md
+      - credentials.example.json
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+snapshot:
+  name_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - 'merge conflict'
+      - Merge pull request
+      - Merge remote-tracking branch
+      - Merge branch
+  groups:
+    - title: 'Features'
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: 'Bug Fixes'
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: 'Performance Improvements'
+      regexp: '^.*?perf(\([[:word:]]+\))??!?:.+$'
+      order: 2
+    - title: 'Refactors'
+      regexp: '^.*?refactor(\([[:word:]]+\))??!?:.+$'
+      order: 3
+    - title: 'Other Changes'
+      order: 999
+
+brews:
+  - name: mcp-google-sheets
+    # Repository to push the Homebrew tap to
+    repository:
+      owner: conallob
+      name: homebrew-taps
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+
+    # Git author used to commit to the repository
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+
+    # Folder inside the repository to put the formula
+    folder: Formula
+
+    # Caveats for the user after installation
+    caveats: |
+      To use mcp-google-sheets, you need to:
+      1. Set up Google Sheets API credentials (see SETUP.md)
+      2. Set the GOOGLE_APPLICATION_CREDENTIALS environment variable
+
+      For detailed setup instructions, visit:
+      https://github.com/conallob/mcp-google-sheets/blob/main/SETUP.md
+
+    # Description of the package
+    description: "MCP server for Google Sheets API integration"
+
+    # Homepage
+    homepage: "https://github.com/conallob/mcp-google-sheets"
+
+    # License
+    license: "MIT"
+
+    # Install script
+    install: |
+      bin.install "mcp-google-sheets"
+
+    # Test script
+    test: |
+      system "#{bin}/mcp-google-sheets", "--version"
+
+release:
+  github:
+    owner: conallob
+    name: mcp-google-sheets
+  draft: false
+  prerelease: auto
+  mode: append
+  header: |
+    ## Release {{ .Tag }} ({{ .Date }})
+
+    Welcome to this new release of mcp-google-sheets!
+  footer: |
+    **Full Changelog**: https://github.com/conallob/mcp-google-sheets/compare/{{ .PreviousTag }}...{{ .Tag }}
+
+    ## Installation
+
+    ### Homebrew
+    ```bash
+    brew install conallob/taps/mcp-google-sheets
+    ```
+
+    ### Manual Download
+    Download the appropriate archive for your platform from the assets below.

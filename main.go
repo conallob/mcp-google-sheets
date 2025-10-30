@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -443,6 +444,16 @@ func (s *MCPServer) handleBatchUpdate(args json.RawMessage) (interface{}, error)
 }
 
 func main() {
+	// Parse command-line flags
+	versionFlag := flag.Bool("version", false, "Print version information and exit")
+	flag.Parse()
+
+	// Handle --version flag
+	if *versionFlag {
+		fmt.Printf("%s version %s\n", serverName, serverVersion)
+		os.Exit(0)
+	}
+
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
 	ctx := context.Background()
