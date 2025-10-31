@@ -16,42 +16,39 @@ A Model Context Protocol (MCP) server written in Go that provides native integra
 ## Prerequisites
 
 - Go 1.21 or higher
-- Google Cloud Project with Sheets API enabled
-- Service Account credentials (JSON key file)
+- Google Account (no GCP project required!)
+- OAuth 2.0 Client credentials (easy to set up)
 
 ## Quick Start
 
-### 1. Set Up Google Cloud Project
+### 1. Set Up OAuth 2.0 Credentials
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project or select an existing one
+2. Create a new project (or use an existing one)
 3. Enable the Google Sheets API:
    - Navigate to "APIs & Services" > "Library"
    - Search for "Google Sheets API"
    - Click "Enable"
+4. Configure OAuth Consent Screen:
+   - Go to "APIs & Services" > "OAuth consent screen"
+   - Select "External" user type (unless you have a Google Workspace)
+   - Fill in app name (e.g., "MCP Google Sheets")
+   - Add your email as developer contact
+   - Click "Save and Continue"
+   - Add scope: `https://www.googleapis.com/auth/spreadsheets`
+   - Click "Save and Continue"
+   - Add your email as a test user
+   - Click "Save and Continue"
+5. Create OAuth 2.0 Client ID:
+   - Go to "APIs & Services" > "Credentials"
+   - Click "Create Credentials" > "OAuth client ID"
+   - Select "Desktop app" as application type
+   - Give it a name (e.g., "MCP Google Sheets Desktop")
+   - Click "Create"
+   - Download the JSON file
+   - Save it as `oauth_credentials.json` in the project directory
 
-### 2. Create Service Account
-
-1. Go to "APIs & Services" > "Credentials"
-2. Click "Create Credentials" > "Service Account"
-3. Fill in the service account details and click "Create"
-4. Grant the service account appropriate roles (optional for private sheets)
-5. Click "Done"
-6. Click on the created service account
-7. Go to "Keys" tab
-8. Click "Add Key" > "Create New Key"
-9. Select "JSON" and click "Create"
-10. Save the downloaded JSON file as `credentials.json` in the project directory
-
-### 3. Share Sheets with Service Account
-
-For the service account to access your Google Sheets:
-1. Open the Google Sheet you want to access
-2. Click "Share"
-3. Add the service account email (found in `credentials.json` as `client_email`)
-4. Grant appropriate permissions (Viewer, Editor, etc.)
-
-### 4. Install and Build
+### 2. Install and Build
 
 ```bash
 # Clone the repository
@@ -68,20 +65,23 @@ go build -o mcp-google-sheets
 go run main.go
 ```
 
-### 5. Configure Environment
+### 3. First Run - OAuth Authentication
 
-Set the environment variable to point to your credentials:
-
-```bash
-export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/credentials.json"
-```
-
-Or add to your shell profile (~/.bashrc, ~/.zshrc, etc.):
+On the first run, you'll be prompted to authorize the application:
 
 ```bash
-echo 'export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/credentials.json"' >> ~/.bashrc
-source ~/.bashrc
+# Run the server (it will guide you through OAuth)
+./mcp-google-sheets
 ```
+
+The server will:
+1. Display a URL for authorization
+2. Open your browser automatically (or you can copy/paste the URL)
+3. Ask you to sign in with your Google account
+4. Request permission to access your Google Sheets
+5. Save the access token for future use
+
+After authorization, you can access any Google Sheets you own or have access to - no need to share with a service account!
 
 ## MCP Client Configuration
 
@@ -95,7 +95,26 @@ Add to your Claude Code MCP settings (typically in `~/.claude/mcp_settings.json`
     "google-sheets": {
       "command": "/path/to/mcp-google-sheets/mcp-google-sheets",
       "env": {
-        "GOOGLE_APPLICATION_CREDENTIALS": "/path/to/your/credentials.json"
+        "GOOGLE_OAUTH_CREDENTIALS": "/path/to/oauth_credentials.json"
+      }
+    }
+  }
+}
+```
+
+**Note**: If you don't set the `GOOGLE_OAUTH_CREDENTIALS` environment variable, the server will look for `oauth_credentials.json` in:
+1. Current directory
+2. `~/.config/mcp-google-sheets/oauth_credentials.json`
+
+You can also use individual environment variables:
+```json
+{
+  "mcpServers": {
+    "google-sheets": {
+      "command": "/path/to/mcp-google-sheets/mcp-google-sheets",
+      "env": {
+        "GOOGLE_OAUTH_CLIENT_ID": "your-client-id.apps.googleusercontent.com",
+        "GOOGLE_OAUTH_CLIENT_SECRET": "your-client-secret"
       }
     }
   }
@@ -106,7 +125,7 @@ Add to your Claude Code MCP settings (typically in `~/.claude/mcp_settings.json`
 
 For other MCP clients, configure the server with:
 - **Command**: Path to the `mcp-google-sheets` binary
-- **Environment**: Set `GOOGLE_APPLICATION_CREDENTIALS` to your credentials file path
+- **Environment** (optional): Set `GOOGLE_OAUTH_CREDENTIALS` to your OAuth credentials file path
 - **Protocol**: stdio (standard input/output)
 
 ## Available Tools
@@ -256,14 +275,32 @@ https://docs.google.com/spreadsheets/d/1abc123def456ghi789/edit
 
 ### Authentication Errors
 
-- Ensure `GOOGLE_APPLICATION_CREDENTIALS` points to a valid JSON key file
-- Verify the service account email has access to the spreadsheet
+- If you get "unable to load OAuth configuration", make sure:
+  - `oauth_credentials.json` exists in the project directory, OR
+  - `GOOGLE_OAUTH_CREDENTIALS` environment variable is set, OR
+  - `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` environment variables are set
 - Check that the Google Sheets API is enabled in your Google Cloud project
+- Verify your OAuth consent screen is configured correctly
 
 ### Permission Errors
 
-- Make sure you've shared the spreadsheet with the service account email
-- Grant appropriate permissions (Editor for write operations, Viewer for read-only)
+- The authenticated user must have access to the spreadsheet
+- You can access any sheets your Google account can access
+- No need to share sheets with a service account anymore!
+
+### Re-authenticating
+
+If you need to re-authenticate (e.g., revoked access or different account):
+```bash
+# Remove the stored token
+rm ~/.config/mcp-google-sheets/token.json
+
+# Or if using custom token location
+rm /path/to/your/token.json
+
+# Run the server again to re-authenticate
+./mcp-google-sheets
+```
 
 ### Connection Errors
 
@@ -305,14 +342,15 @@ GOOS=windows GOARCH=amd64 go build -o mcp-google-sheets.exe
 
 ## Security Considerations
 
-- **Never commit `credentials.json`** to version control
-- Store credentials securely and restrict file permissions:
+- **Never commit `oauth_credentials.json` or `token.json`** to version control (already in .gitignore)
+- Store OAuth credentials securely and restrict file permissions:
   ```bash
-  chmod 600 credentials.json
+  chmod 600 oauth_credentials.json
+  chmod 600 ~/.config/mcp-google-sheets/token.json
   ```
-- Use service accounts with minimal necessary permissions
-- Regularly rotate service account keys
-- Consider using Google Cloud Secret Manager for production deployments
+- OAuth tokens expire and are automatically refreshed
+- You can revoke access at any time from [Google Account Permissions](https://myaccount.google.com/permissions)
+- For production deployments, consider using environment variables for OAuth credentials
 
 ## Contributing
 

@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 
+	"github.com/conallob/mcp-google-sheets/oauth"
 	"github.com/conallob/mcp-google-sheets/sheets"
 	"google.golang.org/api/option"
 	sheetsapi "google.golang.org/api/sheets/v4"
@@ -45,12 +46,20 @@ type MCPServer struct {
 }
 
 func NewMCPServer(ctx context.Context) (*MCPServer, error) {
-	credPath := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
-	if credPath == "" {
-		return nil, fmt.Errorf("GOOGLE_APPLICATION_CREDENTIALS environment variable not set")
+	// Load OAuth configuration
+	oauthConfig, err := oauth.LoadConfig()
+	if err != nil {
+		return nil, fmt.Errorf("unable to load OAuth configuration: %v", err)
 	}
 
-	srv, err := sheetsapi.NewService(ctx, option.WithCredentialsFile(credPath))
+	// Get authenticated HTTP client
+	client, err := oauthConfig.GetClient(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("unable to get OAuth client: %v", err)
+	}
+
+	// Create Sheets service with OAuth client
+	srv, err := sheetsapi.NewService(ctx, option.WithHTTPClient(client))
 	if err != nil {
 		return nil, fmt.Errorf("unable to create sheets service: %v", err)
 	}

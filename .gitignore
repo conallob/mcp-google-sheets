@@ -25,6 +25,7 @@ service-account.json
 
 # Except example files
 !credentials.example.json
+!oauth_credentials.example.json
 
 # Build output
 mcp-google-sheets
