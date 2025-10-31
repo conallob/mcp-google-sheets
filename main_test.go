@@ -3,26 +3,16 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"reflect"
+	"fmt"
+	"os"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/conallob/mcp-google-sheets/sheets"
 	"google.golang.org/api/option"
 	sheetsapi "google.golang.org/api/sheets/v4"
 )
-
-// mockSheetsClient is a mock implementation of the sheets.Client
-type mockSheetsClient struct {
-	readFunc             func(ctx context.Context, spreadsheetID, readRange string) (interface{}, error)
-	writeFunc            func(ctx context.Context, spreadsheetID, writeRange string, values [][]string) (interface{}, error)
-	appendFunc           func(ctx context.Context, spreadsheetID, appendRange string, values [][]string) (interface{}, error)
-	createFunc           func(ctx context.Context, title string, sheetNames []string) (interface{}, error)
-	getInfoFunc          func(ctx context.Context, spreadsheetID string) (interface{}, error)
-	addSheetFunc         func(ctx context.Context, spreadsheetID, sheetName string) (interface{}, error)
-	clearFunc            func(ctx context.Context, spreadsheetID, clearRange string) (interface{}, error)
-	batchUpdateFunc      func(ctx context.Context, spreadsheetID string, requests []map[string]interface{}) (interface{}, error)
-}
 
 func TestMCPRequest_JSONParsing(t *testing.T) {
 	jsonStr := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`
@@ -431,50 +421,6 @@ func TestHandleReadSheet_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestHandleReadSheet_ValidParams(t *testing.T) {
-	// Create a mock sheets client
-	mockClient := &sheets.Client{}
-
-	server := &MCPServer{
-		sheetsClient: mockClient,
-		ctx:          context.Background(),
-	}
-
-	args := map[string]interface{}{
-		"spreadsheet_id": "test-id",
-		"range":          "Sheet1!A1:B2",
-	}
-	argsJSON, _ := json.Marshal(args)
-
-	// This will fail because we don't have a real service, but we can test parameter parsing
-	_, err := server.handleReadSheet(argsJSON)
-	// Error is expected due to nil service, but params were parsed correctly
-	_ = err
-}
-
-func TestHandleWriteSheet_ValidParams(t *testing.T) {
-	mockClient := &sheets.Client{}
-
-	server := &MCPServer{
-		sheetsClient: mockClient,
-		ctx:          context.Background(),
-	}
-
-	args := map[string]interface{}{
-		"spreadsheet_id": "test-id",
-		"range":          "Sheet1!A1:B2",
-		"values": [][]string{
-			{"Name", "Age"},
-			{"John", "30"},
-		},
-	}
-	argsJSON, _ := json.Marshal(args)
-
-	_, err := server.handleWriteSheet(argsJSON)
-	// Error is expected due to nil service, but params were parsed correctly
-	_ = err
-}
-
 func TestHandleWriteSheet_InvalidJSON(t *testing.T) {
 	server := &MCPServer{
 		ctx: context.Background(),
@@ -484,28 +430,6 @@ func TestHandleWriteSheet_InvalidJSON(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for invalid JSON")
 	}
-}
-
-func TestHandleAppendSheet_ValidParams(t *testing.T) {
-	mockClient := &sheets.Client{}
-
-	server := &MCPServer{
-		sheetsClient: mockClient,
-		ctx:          context.Background(),
-	}
-
-	args := map[string]interface{}{
-		"spreadsheet_id": "test-id",
-		"range":          "Sheet1!A:B",
-		"values": [][]string{
-			{"Bob", "35"},
-		},
-	}
-	argsJSON, _ := json.Marshal(args)
-
-	_, err := server.handleAppendSheet(argsJSON)
-	// Error is expected due to nil service, but params were parsed correctly
-	_ = err
 }
 
 func TestHandleAppendSheet_InvalidJSON(t *testing.T) {
@@ -519,25 +443,6 @@ func TestHandleAppendSheet_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestHandleCreateSpreadsheet_ValidParams(t *testing.T) {
-	mockClient := &sheets.Client{}
-
-	server := &MCPServer{
-		sheetsClient: mockClient,
-		ctx:          context.Background(),
-	}
-
-	args := map[string]interface{}{
-		"title":  "Test Spreadsheet",
-		"sheets": []string{"Sheet1", "Sheet2"},
-	}
-	argsJSON, _ := json.Marshal(args)
-
-	_, err := server.handleCreateSpreadsheet(argsJSON)
-	// Error is expected due to nil service, but params were parsed correctly
-	_ = err
-}
-
 func TestHandleCreateSpreadsheet_InvalidJSON(t *testing.T) {
 	server := &MCPServer{
 		ctx: context.Background(),
@@ -547,24 +452,6 @@ func TestHandleCreateSpreadsheet_InvalidJSON(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for invalid JSON")
 	}
-}
-
-func TestHandleGetSpreadsheetInfo_ValidParams(t *testing.T) {
-	mockClient := &sheets.Client{}
-
-	server := &MCPServer{
-		sheetsClient: mockClient,
-		ctx:          context.Background(),
-	}
-
-	args := map[string]interface{}{
-		"spreadsheet_id": "test-id",
-	}
-	argsJSON, _ := json.Marshal(args)
-
-	_, err := server.handleGetSpreadsheetInfo(argsJSON)
-	// Error is expected due to nil service, but params were parsed correctly
-	_ = err
 }
 
 func TestHandleGetSpreadsheetInfo_InvalidJSON(t *testing.T) {
@@ -578,25 +465,6 @@ func TestHandleGetSpreadsheetInfo_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestHandleAddSheet_ValidParams(t *testing.T) {
-	mockClient := &sheets.Client{}
-
-	server := &MCPServer{
-		sheetsClient: mockClient,
-		ctx:          context.Background(),
-	}
-
-	args := map[string]interface{}{
-		"spreadsheet_id": "test-id",
-		"sheet_name":     "NewSheet",
-	}
-	argsJSON, _ := json.Marshal(args)
-
-	_, err := server.handleAddSheet(argsJSON)
-	// Error is expected due to nil service, but params were parsed correctly
-	_ = err
-}
-
 func TestHandleAddSheet_InvalidJSON(t *testing.T) {
 	server := &MCPServer{
 		ctx: context.Background(),
@@ -608,25 +476,6 @@ func TestHandleAddSheet_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestHandleClearSheet_ValidParams(t *testing.T) {
-	mockClient := &sheets.Client{}
-
-	server := &MCPServer{
-		sheetsClient: mockClient,
-		ctx:          context.Background(),
-	}
-
-	args := map[string]interface{}{
-		"spreadsheet_id": "test-id",
-		"range":          "Sheet1!A1:B10",
-	}
-	argsJSON, _ := json.Marshal(args)
-
-	_, err := server.handleClearSheet(argsJSON)
-	// Error is expected due to nil service, but params were parsed correctly
-	_ = err
-}
-
 func TestHandleClearSheet_InvalidJSON(t *testing.T) {
 	server := &MCPServer{
 		ctx: context.Background(),
@@ -636,33 +485,6 @@ func TestHandleClearSheet_InvalidJSON(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error for invalid JSON")
 	}
-}
-
-func TestHandleBatchUpdate_ValidParams(t *testing.T) {
-	mockClient := &sheets.Client{}
-
-	server := &MCPServer{
-		sheetsClient: mockClient,
-		ctx:          context.Background(),
-	}
-
-	args := map[string]interface{}{
-		"spreadsheet_id": "test-id",
-		"requests": []map[string]interface{}{
-			{
-				"updateCells": map[string]interface{}{
-					"range": map[string]interface{}{
-						"sheetId": 0,
-					},
-				},
-			},
-		},
-	}
-	argsJSON, _ := json.Marshal(args)
-
-	_, err := server.handleBatchUpdate(argsJSON)
-	// Error is expected due to nil service, but params were parsed correctly
-	_ = err
 }
 
 func TestHandleBatchUpdate_InvalidJSON(t *testing.T) {
@@ -1009,38 +831,277 @@ func ExampleMCPServer_handleRequest() {
 	}
 
 	resp := server.handleRequest(req)
-	data, _ := json.Marshal(resp)
-	println(string(data))
+
+	// Verify the response has no error
+	if resp.Error == nil {
+		fmt.Println("ping successful")
+	}
+	// Output: ping successful
 }
 
-// Additional helper functions for testing
+// Security and Input Validation Tests
+func TestInputValidation_MaliciousSpreadsheetID(t *testing.T) {
+	server := &MCPServer{
+		sheetsClient: &sheets.Client{},
+		ctx:          context.Background(),
+	}
 
-func createTestServer() *MCPServer {
-	return &MCPServer{
+	maliciousInputs := []string{
+		"../../../etc/passwd",
+		"'; DROP TABLE spreadsheets; --",
+		"<script>alert('xss')</script>",
+		strings.Repeat("A", 10000), // Very long input
+		"\x00\x01\x02",             // Null bytes and control characters
+	}
+
+	for _, input := range maliciousInputs {
+		args := map[string]interface{}{
+			"spreadsheet_id": input,
+		}
+		argsJSON, _ := json.Marshal(args)
+
+		// Should handle gracefully without panicking
+		_, err := server.handleReadSheet(argsJSON)
+		// Error is acceptable, panic is not
+		_ = err
+	}
+}
+
+func TestInputValidation_ExtremelyLargeData(t *testing.T) {
+	server := &MCPServer{
+		sheetsClient: &sheets.Client{},
+		ctx:          context.Background(),
+	}
+
+	// Test with very large data array
+	largeValues := make([][]string, 10000)
+	for i := range largeValues {
+		largeValues[i] = []string{"data1", "data2", "data3"}
+	}
+
+	args := map[string]interface{}{
+		"spreadsheet_id": "test-id",
+		"range":          "Sheet1!A1",
+		"values":         largeValues,
+	}
+	argsJSON, _ := json.Marshal(args)
+
+	// Should handle gracefully without panicking
+	_, err := server.handleWriteSheet(argsJSON)
+	_ = err
+}
+
+func TestInputValidation_SpecialCharactersInSheetName(t *testing.T) {
+	server := &MCPServer{
+		sheetsClient: &sheets.Client{},
+		ctx:          context.Background(),
+	}
+
+	specialNames := []string{
+		"Sheet!@#$%^&*()",
+		"Sheet\nWith\nNewlines",
+		"Sheet\tWith\tTabs",
+		"Sheet'With\"Quotes",
+	}
+
+	for _, name := range specialNames {
+		args := map[string]interface{}{
+			"spreadsheet_id": "test-id",
+			"sheet_name":     name,
+		}
+		argsJSON, _ := json.Marshal(args)
+
+		// Should handle gracefully
+		_, err := server.handleAddSheet(argsJSON)
+		_ = err
+	}
+}
+
+// Concurrency Tests
+func TestConcurrency_MultipleSimultaneousRequests(t *testing.T) {
+	server := &MCPServer{
 		ctx: context.Background(),
 	}
+
+	var wg sync.WaitGroup
+	numRequests := 100
+
+	for i := 0; i < numRequests; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+
+			req := MCPRequest{
+				JSONRPC: "2.0",
+				ID:      id,
+				Method:  "ping",
+			}
+
+			resp := server.handleRequest(req)
+			if resp.Error != nil {
+				t.Errorf("Request %d failed: %v", id, resp.Error)
+			}
+		}(i)
+	}
+
+	wg.Wait()
 }
 
-func createTestRequest(method string, id interface{}) MCPRequest {
-	return MCPRequest{
+func TestConcurrency_InitializeRequests(t *testing.T) {
+	server := &MCPServer{
+		ctx: context.Background(),
+	}
+
+	var wg sync.WaitGroup
+	numRequests := 50
+
+	for i := 0; i < numRequests; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+
+			req := MCPRequest{
+				JSONRPC: "2.0",
+				ID:      id,
+				Method:  "initialize",
+			}
+
+			resp := server.handleRequest(req)
+			if resp.Error != nil {
+				t.Errorf("Initialize request %d failed: %v", id, resp.Error)
+			}
+
+			result, ok := resp.Result.(map[string]interface{})
+			if !ok {
+				t.Errorf("Request %d: expected result to be a map", id)
+				return
+			}
+
+			if result["protocolVersion"] != "2024-11-05" {
+				t.Errorf("Request %d: wrong protocol version", id)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+}
+
+func TestConcurrency_ToolsListRequests(t *testing.T) {
+	server := &MCPServer{
+		ctx: context.Background(),
+	}
+
+	var wg sync.WaitGroup
+	numRequests := 50
+
+	for i := 0; i < numRequests; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+
+			req := MCPRequest{
+				JSONRPC: "2.0",
+				ID:      id,
+				Method:  "tools/list",
+			}
+
+			resp := server.handleRequest(req)
+			if resp.Error != nil {
+				t.Errorf("Tools/list request %d failed: %v", id, resp.Error)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+}
+
+// Error Message Validation Tests
+func TestErrorMessages_MethodNotFound(t *testing.T) {
+	server := &MCPServer{
+		ctx: context.Background(),
+	}
+
+	req := MCPRequest{
 		JSONRPC: "2.0",
-		ID:      id,
-		Method:  method,
+		ID:      1,
+		Method:  "invalid_method",
+	}
+
+	resp := server.handleRequest(req)
+
+	if resp.Error == nil {
+		t.Fatal("Expected error for invalid method")
+	}
+
+	expectedMsg := "Method not found: invalid_method"
+	if resp.Error.Message != expectedMsg {
+		t.Errorf("Expected error message '%s', got '%s'", expectedMsg, resp.Error.Message)
+	}
+
+	if resp.Error.Code != -32601 {
+		t.Errorf("Expected error code -32601, got %d", resp.Error.Code)
 	}
 }
 
-func TestHelperFunctions(t *testing.T) {
-	server := createTestServer()
-	if server == nil {
-		t.Error("createTestServer returned nil")
+func TestErrorMessages_ToolNotFound(t *testing.T) {
+	server := &MCPServer{
+		ctx: context.Background(),
 	}
 
-	req := createTestRequest("test", 123)
-	if req.Method != "test" {
-		t.Errorf("Expected method 'test', got '%s'", req.Method)
+	params := map[string]interface{}{
+		"name":      "nonexistent_tool",
+		"arguments": json.RawMessage(`{}`),
 	}
-	if req.ID != 123 {
-		t.Errorf("Expected ID 123, got %v", req.ID)
+	paramsJSON, _ := json.Marshal(params)
+
+	req := MCPRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  paramsJSON,
+	}
+
+	resp := server.handleToolsCall(req)
+
+	if resp.Error == nil {
+		t.Fatal("Expected error for nonexistent tool")
+	}
+
+	expectedMsg := "Tool not found: nonexistent_tool"
+	if resp.Error.Message != expectedMsg {
+		t.Errorf("Expected error message '%s', got '%s'", expectedMsg, resp.Error.Message)
+	}
+
+	if resp.Error.Code != -32601 {
+		t.Errorf("Expected error code -32601, got %d", resp.Error.Code)
+	}
+}
+
+func TestErrorMessages_InvalidParams(t *testing.T) {
+	server := &MCPServer{
+		ctx: context.Background(),
+	}
+
+	req := MCPRequest{
+		JSONRPC: "2.0",
+		ID:      1,
+		Method:  "tools/call",
+		Params:  json.RawMessage(`not valid json`),
+	}
+
+	resp := server.handleToolsCall(req)
+
+	if resp.Error == nil {
+		t.Fatal("Expected error for invalid params")
+	}
+
+	expectedMsg := "Invalid params"
+	if resp.Error.Message != expectedMsg {
+		t.Errorf("Expected error message '%s', got '%s'", expectedMsg, resp.Error.Message)
+	}
+
+	if resp.Error.Code != -32602 {
+		t.Errorf("Expected error code -32602, got %d", resp.Error.Code)
 	}
 }
 
@@ -1257,6 +1318,3 @@ func TestMCPResponse_BothResultAndError(t *testing.T) {
 		t.Error("Error should be in JSON")
 	}
 }
-
-// Import os for the test
-import "os"

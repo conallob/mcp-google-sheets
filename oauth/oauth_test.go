@@ -353,28 +353,13 @@ func TestGetClient_WithValidToken(t *testing.T) {
 	}
 }
 
-func TestGetTokenFromWeb_CallbackHandling(t *testing.T) {
+func TestOAuthConfig_AuthURLGeneration(t *testing.T) {
 	config := &Config{
 		ClientID:     "test-client-id",
 		ClientSecret: "test-client-secret",
 		RedirectURI:  "http://localhost:8080/oauth/callback",
 		TokenFile:    filepath.Join(t.TempDir(), "token.json"),
 	}
-
-	// Create a mock OAuth server
-	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Mock the token exchange endpoint
-		if r.URL.Path == "/token" {
-			token := map[string]interface{}{
-				"access_token":  "mock-access-token",
-				"refresh_token": "mock-refresh-token",
-				"token_type":    "Bearer",
-				"expires_in":    3600,
-			}
-			json.NewEncoder(w).Encode(token)
-		}
-	}))
-	defer mockServer.Close()
 
 	// Test that the OAuth config is set up correctly
 	oauthConfig := config.GetOAuthConfig()
@@ -394,6 +379,86 @@ func TestGetTokenFromWeb_CallbackHandling(t *testing.T) {
 
 	if !strings.Contains(authURL, "access_type=offline") {
 		t.Errorf("Expected auth URL to contain access_type=offline, got: %s", authURL)
+	}
+}
+
+func TestTokenSecurity_FilePermissions(t *testing.T) {
+	tmpDir := t.TempDir()
+	tokenFile := filepath.Join(tmpDir, "token.json")
+
+	config := &Config{
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		RedirectURI:  "http://localhost:8080/callback",
+		TokenFile:    tokenFile,
+	}
+
+	testToken := &oauth2.Token{
+		AccessToken:  "test-access-token",
+		RefreshToken: "test-refresh-token",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(1 * time.Hour),
+	}
+
+	// Save the token
+	err := config.saveToken(testToken)
+	if err != nil {
+		t.Fatalf("Failed to save token: %v", err)
+	}
+
+	// Check file permissions
+	fileInfo, err := os.Stat(tokenFile)
+	if err != nil {
+		t.Fatalf("Failed to stat token file: %v", err)
+	}
+
+	// On Unix-like systems, token file should be 0600 (read/write for owner only)
+	mode := fileInfo.Mode()
+	perm := mode.Perm()
+
+	// Check that file is not world-readable or group-readable
+	if perm&0077 != 0 {
+		t.Errorf("Token file has insecure permissions: %o (should be 0600)", perm)
+	}
+}
+
+func TestTokenSecurity_DirectoryPermissions(t *testing.T) {
+	tmpDir := t.TempDir()
+	tokenFile := filepath.Join(tmpDir, "secure", "dir", "token.json")
+
+	config := &Config{
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		RedirectURI:  "http://localhost:8080/callback",
+		TokenFile:    tokenFile,
+	}
+
+	testToken := &oauth2.Token{
+		AccessToken:  "test-access-token",
+		RefreshToken: "test-refresh-token",
+		TokenType:    "Bearer",
+		Expiry:       time.Now().Add(1 * time.Hour),
+	}
+
+	// Save the token (should create directories)
+	err := config.saveToken(testToken)
+	if err != nil {
+		t.Fatalf("Failed to save token: %v", err)
+	}
+
+	// Check directory permissions
+	dir := filepath.Dir(tokenFile)
+	dirInfo, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("Failed to stat token directory: %v", err)
+	}
+
+	mode := dirInfo.Mode()
+	perm := mode.Perm()
+
+	// Directory should be 0700 (rwx for owner only)
+	if perm&0077 != 0 {
+		t.Errorf("Token directory has insecure permissions: %o (should be 0700)", perm)
 	}
 }
 
@@ -580,6 +645,8 @@ func ExampleLoadConfig() {
 		return
 	}
 
-	fmt.Printf("Client ID loaded: %s\n", config.ClientID != "")
-	// Output: Client ID loaded: true
+	if config.ClientID != "" {
+		fmt.Println("Client ID loaded successfully")
+	}
+	// Output: Client ID loaded successfully
 }
