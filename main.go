@@ -18,8 +18,10 @@ const (
 	serverName    = "mcp-google-sheets"
 	serverVersion = "2.0.0"
 
-	// scannerMaxBytes is the maximum line size accepted from stdin.
-	// Large batch payloads can exceed bufio's default 64 KiB buffer.
+	// scannerInitBytes is the initial buffer size for the stdin scanner.
+	scannerInitBytes = 64 * 1024 // 64 KiB — sufficient for the vast majority of requests
+	// scannerMaxBytes is the hard ceiling; large batch/write payloads can
+	// exceed bufio's default 64 KiB buffer, so we allow growth up to 16 MiB.
 	scannerMaxBytes = 16 * 1024 * 1024 // 16 MiB
 )
 
@@ -50,7 +52,10 @@ type MCPError struct {
 type MCPServer struct {
 	sheetsClient *sheets.Client
 	cfg          *config.Config
-	ctx          context.Context
+	// ctx is stored here rather than threaded through every handler because the
+	// MCP server's lifetime is tied to a single process invocation; there is no
+	// need for per-request cancellation beyond what the process signal provides.
+	ctx context.Context
 }
 
 func NewMCPServer(ctx context.Context) (*MCPServer, error) {
@@ -404,6 +409,10 @@ func (s *MCPServer) toolCreateSpreadsheet(args json.RawMessage) (interface{}, er
 	if err := json.Unmarshal(args, &p); err != nil {
 		return nil, err
 	}
+	// create_spreadsheet is not tied to a pre-existing spreadsheet ID, so we
+	// can't use CanWrite(id). Instead we gate on NeedsWriteScope(): if any
+	// configured sheet is readwrite the OAuth token carries write permission,
+	// which is sufficient to create a new spreadsheet.
 	if !s.cfg.NeedsWriteScope() {
 		return nil, fmt.Errorf("creating spreadsheets requires at least one sheet configured with readwrite access")
 	}
@@ -448,7 +457,7 @@ func main() {
 	}
 
 	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, scannerMaxBytes), scannerMaxBytes)
+	scanner.Buffer(make([]byte, scannerInitBytes), scannerMaxBytes)
 	encoder := json.NewEncoder(os.Stdout)
 
 	for scanner.Scan() {

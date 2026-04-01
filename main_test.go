@@ -31,7 +31,7 @@ func newTestServerWithSheet(id string, access config.Access) *MCPServer {
 	return &MCPServer{
 		ctx: context.Background(),
 		cfg: &config.Config{
-			Sheets: []config.SheetPermission{{ID: id, Access: access}},
+			Sheets: []config.SpreadsheetPermission{{ID: id, Access: access}},
 		},
 		sheetsClient: sheets.NewClient(nil),
 	}
@@ -431,7 +431,7 @@ func TestPermission_ReadAllowedForConfiguredSheet(t *testing.T) {
 	mcpServer := &MCPServer{
 		ctx: context.Background(),
 		cfg: &config.Config{
-			Sheets: []config.SheetPermission{{ID: "allowed-id", Access: config.AccessRead}},
+			Sheets: []config.SpreadsheetPermission{{ID: "allowed-id", Access: config.AccessRead}},
 		},
 		sheetsClient: sheets.NewClient(srv.Client()),
 	}
@@ -473,7 +473,7 @@ func TestToolListSheets_WithSheets(t *testing.T) {
 	server := &MCPServer{
 		ctx: context.Background(),
 		cfg: &config.Config{
-			Sheets: []config.SheetPermission{
+			Sheets: []config.SpreadsheetPermission{
 				{ID: "id1", Name: "Sheet One", Access: config.AccessRead},
 				{ID: "id2", Access: config.AccessReadWrite},
 			},

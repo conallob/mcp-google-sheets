@@ -17,8 +17,8 @@ const (
 	AccessReadWrite Access = "readwrite"
 )
 
-// SheetPermission defines access control for a single spreadsheet.
-type SheetPermission struct {
+// SpreadsheetPermission defines access control for a single spreadsheet.
+type SpreadsheetPermission struct {
 	// ID is the Google Spreadsheet ID (the long string in the sheet's URL).
 	ID string `json:"id"`
 	// Name is a human-readable label; optional, used only for display.
@@ -29,7 +29,7 @@ type SheetPermission struct {
 
 // Config holds the set of spreadsheets this MCP server is permitted to access.
 type Config struct {
-	Sheets []SheetPermission `json:"sheets"`
+	Sheets []SpreadsheetPermission `json:"sheets"`
 }
 
 // Load reads the sheets permissions config from the path specified by
@@ -48,7 +48,7 @@ func Load() (*Config, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &Config{Sheets: []SheetPermission{}}, nil
+			return &Config{Sheets: []SpreadsheetPermission{}}, nil
 		}
 		return nil, fmt.Errorf("unable to read sheets config at %s: %v", configPath, err)
 	}
@@ -95,15 +95,15 @@ func (c *Config) NeedsWriteScope() bool {
 }
 
 // AllowedSheets returns the full list of configured sheet permissions.
-func (c *Config) AllowedSheets() []SheetPermission {
+func (c *Config) AllowedSheets() []SpreadsheetPermission {
 	return c.Sheets
 }
 
-func (c *Config) find(spreadsheetID string) (SheetPermission, bool) {
+func (c *Config) find(spreadsheetID string) (SpreadsheetPermission, bool) {
 	for _, s := range c.Sheets {
 		if s.ID == spreadsheetID {
 			return s, true
 		}
 	}
-	return SheetPermission{}, false
+	return SpreadsheetPermission{}, false
 }

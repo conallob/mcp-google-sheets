@@ -90,28 +90,12 @@ type clearValuesResponse struct {
 type batchUpdateRequest struct {
 	Requests []map[string]interface{} `json:"requests"`
 }
-
-type batchUpdateResponse struct {
-	SpreadsheetId string        `json:"spreadsheetId"`
-	Replies       []interface{} `json:"replies"`
-}
-
-type addSheetRequest struct {
-	AddSheet struct {
-		Properties sheetProperties `json:"properties"`
-	} `json:"addSheet"`
-}
-
-type addSheetResponse struct {
-	AddSheet struct {
-		Properties sheetProperties `json:"properties"`
-	} `json:"addSheet"`
-}
-
 // ── Read ──────────────────────────────────────────────────────────────────────
 
-// ReadSheet reads values from the given range (A1 notation). Defaults to
-// "Sheet1" when range is empty.
+// ReadSheet reads values from the given range (A1 notation). When range is
+// empty it defaults to the tab named "Sheet1". If the spreadsheet uses a
+// different tab name the caller should supply an explicit range (e.g. "Data"
+// or "Data!A1:Z").
 func (c *Client) ReadSheet(ctx context.Context, spreadsheetID, readRange string) (interface{}, error) {
 	if readRange == "" {
 		readRange = "Sheet1"
@@ -133,8 +117,10 @@ func (c *Client) ReadSheet(ctx context.Context, spreadsheetID, readRange string)
 
 	stringValues := toStringMatrix(vr.Values)
 	colCount := 0
-	if len(stringValues) > 0 {
-		colCount = len(stringValues[0])
+	for _, row := range stringValues {
+		if len(row) > colCount {
+			colCount = len(row)
+		}
 	}
 	return map[string]interface{}{
 		"range":     vr.Range,
