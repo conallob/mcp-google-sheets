@@ -125,6 +125,7 @@ func (s *MCPServer) handleToolsList(req MCPRequest) MCPResponse {
 			"inputSchema": map[string]interface{}{
 				"type":       "object",
 				"properties": map[string]interface{}{},
+				"required":   []string{},
 			},
 		},
 		{
@@ -216,7 +217,7 @@ func (s *MCPServer) handleToolsList(req MCPRequest) MCPResponse {
 		},
 		{
 			"name":        "create_spreadsheet",
-			"description": "Create a new Google Spreadsheet. Requires at least one sheet to be configured with readwrite access (confirming the OAuth token has write permission).",
+			"description": "Create a new Google Spreadsheet. Requires at least one sheet to be configured with readwrite access (confirming the OAuth token has write permission). NOTE: the new spreadsheet's ID is returned but is NOT automatically added to the server's allowed-sheets config — add it manually to sheets.json and restart the server before using other tools on it.",
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{

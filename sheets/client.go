@@ -12,6 +12,11 @@ import (
 
 const productionBaseURL = "https://sheets.googleapis.com/v4/spreadsheets"
 
+// maxResponseBytes caps how much of a single API response we read into memory.
+// Spreadsheets with millions of cells can produce very large responses; this
+// prevents a malformed or unexpectedly large response from exhausting RAM.
+const maxResponseBytes = 50 * 1024 * 1024 // 50 MiB
+
 // Client wraps an authenticated HTTP client for the Google Sheets REST API.
 type Client struct {
 	http    *http.Client
@@ -266,6 +271,7 @@ func (c *Client) CreateSpreadsheet(ctx context.Context, title string, sheetNames
 		"title":           resp.Properties.Title,
 		"sheets":          titles,
 		"message":         "Spreadsheet created successfully",
+		"next_step":       "Add the spreadsheet_id above to your sheets.json config with the desired access level, then restart the server to use it with other tools.",
 	}, nil
 }
 
@@ -350,7 +356,7 @@ func (c *Client) do(req *http.Request, out interface{}) error {
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
 		return fmt.Errorf("read response body: %v", err)
 	}

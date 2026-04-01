@@ -69,9 +69,14 @@ func TestMCPResponse_JSONSerialization(t *testing.T) {
 
 func TestMCPError_Structure(t *testing.T) {
 	e := MCPError{Code: -32601, Message: "Method not found", Data: "info"}
-	data, _ := json.Marshal(e)
+	data, err := json.Marshal(e)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
 	var parsed map[string]interface{}
-	json.Unmarshal(data, &parsed)
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
 	if parsed["code"] != float64(-32601) {
 		t.Errorf("Expected code -32601, got %v", parsed["code"])
 	}

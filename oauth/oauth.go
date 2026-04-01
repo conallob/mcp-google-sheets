@@ -2,6 +2,8 @@ package oauth
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -122,7 +124,9 @@ func (c *Config) GetClient(ctx context.Context, writeAccess bool) (*http.Client,
 	if err == nil {
 		// Cached token exists. If the scope changed (e.g. config now needs
 		// write access but token was read-only) we must re-authorise.
-		if writeAccess && !tokenHasWriteScope(token) {
+		// We read the scope from the sidecar file rather than token.Extra because
+		// oauth2.Token.raw is unexported and not preserved across marshal/unmarshal.
+		if writeAccess && !strings.Contains(c.loadScope(), ScopeReadWrite) {
 			log.Println("Config requires write access but cached token is read-only. Re-authorising...")
 			return c.authorise(ctx, cfg)
 		}
@@ -141,6 +145,13 @@ func (c *Config) authorise(ctx context.Context, cfg *oauth2.Config) (*http.Clien
 	}
 	if err := c.saveToken(token); err != nil {
 		log.Printf("Warning: unable to cache token: %v", err)
+	}
+	// Persist the granted scope separately so tokenHasWriteScope works after
+	// reload (oauth2.Token.raw is unexported and not round-tripped by json).
+	if len(cfg.Scopes) > 0 {
+		if err := c.saveScope(cfg.Scopes[0]); err != nil {
+			log.Printf("Warning: unable to cache token scope: %v", err)
+		}
 	}
 	return cfg.Client(ctx, token), nil
 }
@@ -184,11 +195,23 @@ func (c *Config) saveToken(token *oauth2.Token) error {
 // getTokenFromWeb runs a local HTTP server to receive the OAuth callback and
 // exchanges the authorization code for a token.
 func (c *Config) getTokenFromWeb(ctx context.Context, cfg *oauth2.Config) (*oauth2.Token, error) {
+	// Generate a random state token to protect against CSRF attacks.
+	stateBytes := make([]byte, 16)
+	if _, err := rand.Read(stateBytes); err != nil {
+		return nil, fmt.Errorf("generate OAuth state token: %v", err)
+	}
+	state := hex.EncodeToString(stateBytes)
+
 	codeCh := make(chan string, 1)
 	errCh := make(chan error, 1)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/oauth/callback", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("state"); got != state {
+			errCh <- fmt.Errorf("OAuth state mismatch (possible CSRF): got %q", got)
+			http.Error(w, "State mismatch", http.StatusBadRequest)
+			return
+		}
 		code := r.URL.Query().Get("code")
 		if code == "" {
 			errCh <- fmt.Errorf("no authorization code in callback")
@@ -211,7 +234,7 @@ func (c *Config) getTokenFromWeb(ctx context.Context, cfg *oauth2.Config) (*oaut
 	}()
 	defer srv.Shutdown(ctx) //nolint:errcheck
 
-	authURL := cfg.AuthCodeURL("state-token", oauth2.AccessTypeOffline, oauth2.ApprovalForce)
+	authURL := cfg.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
 	fmt.Println("\n" + strings.Repeat("=", 72))
 	fmt.Println("GOOGLE OAUTH AUTHORIZATION REQUIRED")
 	fmt.Println(strings.Repeat("=", 72))
@@ -233,11 +256,20 @@ func (c *Config) getTokenFromWeb(ctx context.Context, cfg *oauth2.Config) (*oaut
 	}
 }
 
-// tokenHasWriteScope returns true if the cached token includes the read+write scope.
-func tokenHasWriteScope(t *oauth2.Token) bool {
-	// The scope is stored in the Extra field when saved from an exchange.
-	scope, _ := t.Extra("scope").(string)
-	return strings.Contains(scope, ScopeReadWrite)
+// saveScope writes the granted OAuth scope to a sidecar file alongside the
+// token, so it survives process restarts.
+func (c *Config) saveScope(scope string) error {
+	return os.WriteFile(c.TokenFile+".scope", []byte(scope), 0600)
+}
+
+// loadScope reads the persisted scope from the sidecar file. Returns an empty
+// string if the file is absent (e.g. first run or pre-existing token).
+func (c *Config) loadScope() string {
+	data, err := os.ReadFile(c.TokenFile + ".scope")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 func redirectURI() string {
@@ -256,6 +288,8 @@ func tokenFilePath() string {
 		return TokenFileName
 	}
 	dir := filepath.Join(homeDir, ".config", "mcp-google-sheets")
-	os.MkdirAll(dir, 0700) //nolint:errcheck
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		log.Printf("Warning: unable to create token directory %s: %v", dir, err)
+	}
 	return filepath.Join(dir, TokenFileName)
 }
