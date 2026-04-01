@@ -1,0 +1,14 @@
+{
+  "sheets": [
+    {
+      "id": "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms",
+      "name": "Monthly Budget",
+      "access": "read"
+    },
+    {
+      "id": "1A2B3C4D5E6F7G8H9I0JKLMNOPQRSTUVWXYZabcdefgh",
+      "name": "Project Tracker",
+      "access": "readwrite"
+    }
+  ]
+}
