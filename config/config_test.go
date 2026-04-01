@@ -21,8 +21,7 @@ func writeConfig(t *testing.T, cfg Config) string {
 }
 
 func TestLoad_FileNotExist_ReturnsEmpty(t *testing.T) {
-	os.Setenv("GOOGLE_SHEETS_CONFIG", "/nonexistent/sheets.json")
-	defer os.Unsetenv("GOOGLE_SHEETS_CONFIG")
+	t.Setenv("GOOGLE_SHEETS_CONFIG", "/nonexistent/sheets.json")
 
 	cfg, err := Load()
 	if err != nil {
@@ -34,9 +33,8 @@ func TestLoad_FileNotExist_ReturnsEmpty(t *testing.T) {
 }
 
 func TestLoad_EmptyFile(t *testing.T) {
-	path := writeConfig(t, Config{Sheets: []SheetPermission{}})
-	os.Setenv("GOOGLE_SHEETS_CONFIG", path)
-	defer os.Unsetenv("GOOGLE_SHEETS_CONFIG")
+	path := writeConfig(t, Config{Sheets: []SpreadsheetPermission{}})
+	t.Setenv("GOOGLE_SHEETS_CONFIG", path)
 
 	cfg, err := Load()
 	if err != nil {
@@ -48,12 +46,11 @@ func TestLoad_EmptyFile(t *testing.T) {
 }
 
 func TestLoad_ValidConfig(t *testing.T) {
-	path := writeConfig(t, Config{Sheets: []SheetPermission{
+	path := writeConfig(t, Config{Sheets: []SpreadsheetPermission{
 		{ID: "id1", Name: "Budget", Access: AccessRead},
 		{ID: "id2", Access: AccessReadWrite},
 	}})
-	os.Setenv("GOOGLE_SHEETS_CONFIG", path)
-	defer os.Unsetenv("GOOGLE_SHEETS_CONFIG")
+	t.Setenv("GOOGLE_SHEETS_CONFIG", path)
 
 	cfg, err := Load()
 	if err != nil {
@@ -70,9 +67,10 @@ func TestLoad_ValidConfig(t *testing.T) {
 func TestLoad_InvalidAccess(t *testing.T) {
 	data := []byte(`{"sheets":[{"id":"x","access":"admin"}]}`)
 	path := filepath.Join(t.TempDir(), "sheets.json")
-	os.WriteFile(path, data, 0600)
-	os.Setenv("GOOGLE_SHEETS_CONFIG", path)
-	defer os.Unsetenv("GOOGLE_SHEETS_CONFIG")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("GOOGLE_SHEETS_CONFIG", path)
 
 	_, err := Load()
 	if err == nil {
@@ -83,9 +81,10 @@ func TestLoad_InvalidAccess(t *testing.T) {
 func TestLoad_EmptyID(t *testing.T) {
 	data := []byte(`{"sheets":[{"id":"","access":"read"}]}`)
 	path := filepath.Join(t.TempDir(), "sheets.json")
-	os.WriteFile(path, data, 0600)
-	os.Setenv("GOOGLE_SHEETS_CONFIG", path)
-	defer os.Unsetenv("GOOGLE_SHEETS_CONFIG")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("GOOGLE_SHEETS_CONFIG", path)
 
 	_, err := Load()
 	if err == nil {
@@ -96,11 +95,9 @@ func TestLoad_EmptyID(t *testing.T) {
 func TestLoad_NoConfigFile_DefaultsToEmpty(t *testing.T) {
 	// Point to a non-existent default path by unsetting the env var and
 	// temporarily setting HOME to a temp dir with no config file.
-	os.Unsetenv("GOOGLE_SHEETS_CONFIG")
+	t.Setenv("GOOGLE_SHEETS_CONFIG", "")
 	tmpHome := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpHome)
-	defer os.Setenv("HOME", oldHome)
+	t.Setenv("HOME", tmpHome)
 
 	cfg, err := Load()
 	if err != nil {
@@ -112,7 +109,7 @@ func TestLoad_NoConfigFile_DefaultsToEmpty(t *testing.T) {
 }
 
 func TestCanRead(t *testing.T) {
-	cfg := &Config{Sheets: []SheetPermission{
+	cfg := &Config{Sheets: []SpreadsheetPermission{
 		{ID: "id1", Access: AccessRead},
 		{ID: "id2", Access: AccessReadWrite},
 	}}
@@ -129,7 +126,7 @@ func TestCanRead(t *testing.T) {
 }
 
 func TestCanWrite(t *testing.T) {
-	cfg := &Config{Sheets: []SheetPermission{
+	cfg := &Config{Sheets: []SpreadsheetPermission{
 		{ID: "id1", Access: AccessRead},
 		{ID: "id2", Access: AccessReadWrite},
 	}}
@@ -146,12 +143,12 @@ func TestCanWrite(t *testing.T) {
 }
 
 func TestNeedsWriteScope(t *testing.T) {
-	readOnly := &Config{Sheets: []SheetPermission{{ID: "id1", Access: AccessRead}}}
+	readOnly := &Config{Sheets: []SpreadsheetPermission{{ID: "id1", Access: AccessRead}}}
 	if readOnly.NeedsWriteScope() {
 		t.Error("Expected NeedsWriteScope == false for read-only config")
 	}
 
-	mixed := &Config{Sheets: []SheetPermission{
+	mixed := &Config{Sheets: []SpreadsheetPermission{
 		{ID: "id1", Access: AccessRead},
 		{ID: "id2", Access: AccessReadWrite},
 	}}
@@ -166,7 +163,7 @@ func TestNeedsWriteScope(t *testing.T) {
 }
 
 func TestAllowedSheets(t *testing.T) {
-	perms := []SheetPermission{
+	perms := []SpreadsheetPermission{
 		{ID: "id1", Access: AccessRead},
 		{ID: "id2", Access: AccessReadWrite},
 	}
