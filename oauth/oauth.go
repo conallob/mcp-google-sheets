@@ -53,7 +53,10 @@ func LoadConfig() (*Config, error) {
 
 	credPath := os.Getenv("GOOGLE_OAUTH_CREDENTIALS")
 	if credPath == "" {
-		homeDir, _ := os.UserHomeDir()
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			log.Printf("Warning: unable to determine home directory (%v); falling back to current directory for OAuth credentials", err)
+		}
 		candidate := filepath.Join(homeDir, ".config", "mcp-google-sheets", "oauth_credentials.json")
 		if _, err := os.Stat(candidate); err == nil {
 			credPath = candidate

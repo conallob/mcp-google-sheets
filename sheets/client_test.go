@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -59,16 +60,30 @@ func TestReadSheet_Success(t *testing.T) {
 }
 
 func TestReadSheet_EmptyRange(t *testing.T) {
-	// When range is empty the URL should end at /values (no range path segment),
-	// allowing the Sheets API to return the first sheet regardless of its name.
+	// When range is empty, ReadSheet must first resolve the first sheet's title
+	// via a metadata call, then read using that title. The test handler services
+	// both requests: the metadata call (no /values in path) and the values call
+	// (contains /values/FirstTab).
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if containsStr(r.URL.Path, "Sheet1") {
-			t.Errorf("Should not include 'Sheet1' in path when range is empty; got: %s", r.URL.Path)
-		}
-		if !containsStr(r.URL.Path, "/values") {
-			t.Errorf("Path should end with /values, got: %s", r.URL.Path)
-		}
 		w.Header().Set("Content-Type", "application/json")
+		if !strings.Contains(r.URL.Path, "/values") {
+			// Metadata request — return a spreadsheet with one tab.
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"spreadsheetId": "test-id",
+				"properties":    map[string]string{"title": "Test"},
+				"sheets": []map[string]interface{}{
+					{"properties": map[string]interface{}{"title": "FirstTab", "sheetId": 0}},
+				},
+			})
+			return
+		}
+		// Values request — must use the resolved tab name, not "Sheet1".
+		if strings.Contains(r.URL.Path, "Sheet1") {
+			t.Errorf("Should not use hardcoded Sheet1; got path: %s", r.URL.Path)
+		}
+		if !strings.Contains(r.URL.Path, "FirstTab") {
+			t.Errorf("Expected FirstTab in values path, got: %s", r.URL.Path)
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"range":  "FirstTab!A1:A1",
 			"values": [][]interface{}{{"Data"}},
@@ -532,24 +547,9 @@ func TestAPIError_SurfacedCorrectly(t *testing.T) {
 	if err == nil {
 		t.Fatal("Expected error for 403 response")
 	}
-	if !containsStr(err.Error(), "PERMISSION_DENIED") && !containsStr(err.Error(), "403") {
+	if !strings.Contains(err.Error(), "PERMISSION_DENIED") && !strings.Contains(err.Error(), "403") {
 		t.Errorf("Expected permission error, got: %v", err)
 	}
-}
-
-// Helper
-
-func containsStr(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 || searchStr(s, substr))
-}
-
-func searchStr(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
 
 // Benchmarks

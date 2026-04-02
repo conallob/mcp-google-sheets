@@ -101,18 +101,24 @@ type clearValuesResponse struct {
 type batchUpdateRequest struct {
 	Requests []map[string]interface{} `json:"requests"`
 }
+
 // ── Read ──────────────────────────────────────────────────────────────────────
 
 // ReadSheet reads values from the given range (A1 notation). When range is
-// empty the call omits the range parameter entirely; the Sheets API then
-// returns all values from the first sheet tab regardless of its name.
-// Supplying an explicit range (e.g. "Data" or "Data!A1:Z") is recommended
-// when the target tab might not be the first one.
+// empty, the first sheet tab's title is resolved via a metadata call and used
+// as the range — this is necessary because the Sheets API requires an explicit
+// range; there is no "values collection" endpoint. Supplying an explicit range
+// is more efficient and is recommended when the target tab is known.
 func (c *Client) ReadSheet(ctx context.Context, spreadsheetID, readRange string) (interface{}, error) {
-	endpoint := fmt.Sprintf("%s/%s/values", c.baseURL, url.PathEscape(spreadsheetID))
-	if readRange != "" {
-		endpoint = fmt.Sprintf("%s/%s/values/%s", c.baseURL, url.PathEscape(spreadsheetID), url.PathEscape(readRange))
+	if readRange == "" {
+		title, err := c.firstSheetTitle(ctx, spreadsheetID)
+		if err != nil {
+			return nil, fmt.Errorf("read sheet (resolving first sheet name): %v", err)
+		}
+		readRange = title
 	}
+
+	endpoint := fmt.Sprintf("%s/%s/values/%s", c.baseURL, url.PathEscape(spreadsheetID), url.PathEscape(readRange))
 	var vr valueRange
 	if err := c.get(ctx, endpoint, &vr); err != nil {
 		return nil, fmt.Errorf("read sheet: %v", err)
@@ -322,6 +328,22 @@ func (c *Client) AddSheet(ctx context.Context, spreadsheetID, sheetName string) 
 	}
 
 	return map[string]interface{}{"message": "Sheet added successfully"}, nil
+}
+
+// ── Internal helpers ─────────────────────────────────────────────────────────
+
+// firstSheetTitle fetches spreadsheet metadata and returns the title of the
+// first sheet tab. Used by ReadSheet when no explicit range is supplied.
+func (c *Client) firstSheetTitle(ctx context.Context, spreadsheetID string) (string, error) {
+	endpoint := fmt.Sprintf("%s/%s?fields=sheets.properties.title", c.baseURL, url.PathEscape(spreadsheetID))
+	var ss spreadsheet
+	if err := c.get(ctx, endpoint, &ss); err != nil {
+		return "", err
+	}
+	if len(ss.Sheets) == 0 {
+		return "", fmt.Errorf("spreadsheet has no sheet tabs")
+	}
+	return ss.Sheets[0].Properties.Title, nil
 }
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────

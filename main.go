@@ -93,6 +93,9 @@ func (s *MCPServer) handleRequest(req MCPRequest) MCPResponse {
 		return s.handleToolsCall(req)
 	case "ping":
 		return MCPResponse{JSONRPC: "2.0", ID: req.ID, Result: map[string]interface{}{}}
+	case "notifications/initialized":
+		// MCP post-handshake notification — no response expected or sent.
+		return MCPResponse{}
 	default:
 		return errResponse(req.ID, -32601, fmt.Sprintf("method not found: %s", req.Method))
 	}
@@ -474,6 +477,10 @@ func main() {
 		}
 
 		resp := server.handleRequest(req)
+		// JSON-RPC 2.0: notifications (absent/null id) must not receive a response.
+		if req.ID == nil {
+			continue
+		}
 		if err := encoder.Encode(resp); err != nil {
 			log.Printf("Failed to encode response: %v", err)
 		}

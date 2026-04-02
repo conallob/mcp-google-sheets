@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -75,6 +76,23 @@ func TestLoad_InvalidAccess(t *testing.T) {
 	_, err := Load()
 	if err == nil {
 		t.Fatal("Expected error for invalid access level")
+	}
+}
+
+func TestLoad_DuplicateID(t *testing.T) {
+	data := []byte(`{"sheets":[{"id":"x","access":"read"},{"id":"x","access":"readwrite"}]}`)
+	path := filepath.Join(t.TempDir(), "sheets.json")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("GOOGLE_SHEETS_CONFIG", path)
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Expected error for duplicate spreadsheet ID")
+	}
+	if !strings.Contains(err.Error(), "duplicate") {
+		t.Errorf("Expected 'duplicate' in error, got: %v", err)
 	}
 }
 

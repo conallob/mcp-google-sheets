@@ -29,13 +29,12 @@ func newTestServer() *MCPServer {
 // with the given access level. The sheets client points at a local test server
 // returning HTTP 500, so any API call that passes the permission check fails
 // explicitly rather than panicking on a nil client.
-func newTestServerWithSheet(id string, access config.Access) *MCPServer {
+func newTestServerWithSheet(t *testing.T, id string, access config.Access) *MCPServer {
+	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
-	// srv is not closed here intentionally: it lives for the duration of the
-	// test binary. In practice these tests never reach the HTTP layer (they
-	// return at the permission check), so the server is never called.
+	t.Cleanup(srv.Close)
 	return &MCPServer{
 		ctx: context.Background(),
 		cfg: &config.Config{
@@ -181,6 +180,18 @@ func TestHandleInitialize_IDPreserved(t *testing.T) {
 	result := resp.Result.(map[string]interface{})
 	if _, ok := result["capabilities"].(map[string]interface{}); !ok {
 		t.Error("Expected capabilities map")
+	}
+}
+
+// ── notifications ──────────────────────────────────────────────────────────
+
+func TestHandleRequest_NotificationsInitialized(t *testing.T) {
+	// The server must handle notifications/initialized without error and return
+	// an empty response (the caller must not send it over the wire).
+	server := newTestServer()
+	resp := server.handleRequest(MCPRequest{JSONRPC: "2.0", Method: "notifications/initialized"})
+	if resp.Error != nil {
+		t.Errorf("notifications/initialized should not produce an error: %v", resp.Error)
 	}
 }
 
@@ -427,7 +438,7 @@ func TestPermission_ReadDeniedForUnknownSheet(t *testing.T) {
 }
 
 func TestPermission_WriteDeniedForReadOnlySheet(t *testing.T) {
-	server := newTestServerWithSheet("read-only-id", config.AccessRead)
+	server := newTestServerWithSheet(t, "read-only-id", config.AccessRead)
 	args, _ := json.Marshal(map[string]interface{}{
 		"spreadsheet_id": "read-only-id",
 		"range":          "Sheet1!A1",

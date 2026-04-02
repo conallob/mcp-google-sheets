@@ -58,6 +58,7 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("unable to parse sheets config: %v", err)
 	}
 
+	seen := make(map[string]struct{}, len(cfg.Sheets))
 	for _, sheet := range cfg.Sheets {
 		if sheet.ID == "" {
 			return nil, fmt.Errorf("sheets config contains an entry with an empty id")
@@ -66,6 +67,10 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("invalid access %q for sheet %q: must be %q or %q",
 				sheet.Access, sheet.ID, AccessRead, AccessReadWrite)
 		}
+		if _, dup := seen[sheet.ID]; dup {
+			return nil, fmt.Errorf("sheets config contains duplicate id %q", sheet.ID)
+		}
+		seen[sheet.ID] = struct{}{}
 	}
 
 	return &cfg, nil
