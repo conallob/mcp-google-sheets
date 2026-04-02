@@ -17,7 +17,7 @@ import (
 
 const (
 	serverName    = "mcp-google-sheets"
-	serverVersion = "2.0.0"
+	serverVersion = "1.0.0"
 
 	// scannerInitBytes is the initial buffer size for the stdin scanner.
 	scannerInitBytes = 64 * 1024 // 64 KiB — sufficient for the vast majority of requests
