@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/conallob/mcp-google-sheets/config"
 	"github.com/conallob/mcp-google-sheets/oauth"
@@ -144,7 +145,7 @@ func (s *MCPServer) handleToolsList(req MCPRequest) MCPResponse {
 		},
 		{
 			"name":        "read_sheet",
-			"description": "Read cell values from a Google Sheet. Returns the values as a 2-D array of strings together with row/column counts.",
+			"description": "Read cell values from a Google Sheet. Returns the values as a 2-D array of strings together with row/column counts. Supply an explicit range when the target tab name is known — omitting range triggers an extra API call to resolve the first sheet tab title.",
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -356,6 +357,9 @@ func (s *MCPServer) toolWriteSheet(args json.RawMessage) (interface{}, error) {
 	if err := json.Unmarshal(args, &p); err != nil {
 		return nil, err
 	}
+	if len(p.Values) == 0 {
+		return nil, fmt.Errorf("values must not be empty")
+	}
 	if !s.cfg.CanWrite(p.SpreadsheetID) {
 		return nil, permissionDenied(p.SpreadsheetID, "readwrite")
 	}
@@ -370,6 +374,9 @@ func (s *MCPServer) toolAppendSheet(args json.RawMessage) (interface{}, error) {
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return nil, err
+	}
+	if len(p.Values) == 0 {
+		return nil, fmt.Errorf("values must not be empty")
 	}
 	if !s.cfg.CanWrite(p.SpreadsheetID) {
 		return nil, permissionDenied(p.SpreadsheetID, "readwrite")
@@ -481,7 +488,9 @@ func main() {
 
 		resp := server.handleRequest(req)
 		// JSON-RPC 2.0: notifications (absent/null id) must not receive a response.
-		if req.ID == nil {
+		// Also suppress responses for any notification method regardless of id,
+		// since non-compliant clients may send notifications with a non-null id.
+		if req.ID == nil || strings.HasPrefix(req.Method, "notifications/") {
 			continue
 		}
 		if err := encoder.Encode(resp); err != nil {

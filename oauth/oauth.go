@@ -190,7 +190,12 @@ func (c *Config) loadToken() (*oauth2.Token, string, error) {
 		return nil, "", err
 	}
 
-	// Try the current wrapper format first.
+	// Try the current wrapper format first. A successful unmarshal into
+	// persistedToken with a non-nil Token field means the file was written by
+	// this version of the code. The unmarshal error itself is intentionally
+	// ignored here: a bare oauth2.Token also unmarshals without error into
+	// persistedToken (all fields are JSON-compatible), but pt.Token will be nil
+	// in that case, so the nil check distinguishes the two formats.
 	var pt persistedToken
 	if err := json.Unmarshal(data, &pt); err == nil && pt.Token != nil {
 		return pt.Token, pt.Scope, nil
@@ -209,11 +214,11 @@ func (c *Config) loadToken() (*oauth2.Token, string, error) {
 	return &t, "", nil
 }
 
-// saveToken persists a token (and optional scope) to disk with restricted
-// permissions. The directory is created if it does not exist. Callers that
-// know the granted scope should pass it as the second argument so that scope
-// detection works correctly after the token is reloaded.
-func (c *Config) saveToken(token *oauth2.Token, scope ...string) error {
+// saveToken persists a token and its granted scope to disk with restricted
+// permissions. The directory is created if it does not exist. Pass an empty
+// string for scope when the scope is unknown; GetClient will re-authorise on
+// the next write-access request in that case.
+func (c *Config) saveToken(token *oauth2.Token, scope string) error {
 	dir := filepath.Dir(c.TokenFile)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("unable to create token directory: %v", err)
@@ -224,11 +229,7 @@ func (c *Config) saveToken(token *oauth2.Token, scope ...string) error {
 	}
 	defer f.Close()
 
-	grantedScope := ""
-	if len(scope) > 0 {
-		grantedScope = scope[0]
-	}
-	return json.NewEncoder(f).Encode(persistedToken{Token: token, Scope: grantedScope})
+	return json.NewEncoder(f).Encode(persistedToken{Token: token, Scope: scope})
 }
 
 // newOAuthCallbackMux builds the HTTP mux for the OAuth redirect callback.
@@ -263,6 +264,7 @@ func newOAuthCallbackMux(state string, codeCh chan<- string, errCh chan<- error)
 // exchanges the authorization code for a token.
 func (c *Config) getTokenFromWeb(ctx context.Context, cfg *oauth2.Config) (*oauth2.Token, error) {
 	// Generate a random state token to protect against CSRF attacks.
+	// 16 bytes = 128 bits of entropy, the recommended minimum for CSRF tokens.
 	stateBytes := make([]byte, 16)
 	if _, err := rand.Read(stateBytes); err != nil {
 		return nil, fmt.Errorf("generate OAuth state token: %v", err)

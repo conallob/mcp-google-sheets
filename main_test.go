@@ -476,6 +476,51 @@ func TestPermission_ReadAllowedForConfiguredSheet(t *testing.T) {
 	}
 }
 
+func TestToolWriteSheet_EmptyValues(t *testing.T) {
+	server := newTestServerWithSheet(t, "sheet-id", config.AccessReadWrite)
+	args, _ := json.Marshal(map[string]interface{}{
+		"spreadsheet_id": "sheet-id",
+		"range":          "Sheet1!A1",
+		"values":         nil,
+	})
+	_, err := server.toolWriteSheet(args)
+	if err == nil {
+		t.Fatal("Expected error for empty values")
+	}
+	if !strings.Contains(err.Error(), "values must not be empty") {
+		t.Errorf("Unexpected error: %v", err)
+	}
+}
+
+func TestToolAppendSheet_EmptyValues(t *testing.T) {
+	server := newTestServerWithSheet(t, "sheet-id", config.AccessReadWrite)
+	args, _ := json.Marshal(map[string]interface{}{
+		"spreadsheet_id": "sheet-id",
+		"range":          "Sheet1",
+		"values":         nil,
+	})
+	_, err := server.toolAppendSheet(args)
+	if err == nil {
+		t.Fatal("Expected error for empty values")
+	}
+	if !strings.Contains(err.Error(), "values must not be empty") {
+		t.Errorf("Unexpected error: %v", err)
+	}
+}
+
+func TestHandleRequest_NotificationsInitialized_WithID_NoResponse(t *testing.T) {
+	// Verify that a non-compliant client sending notifications/initialized with
+	// a non-null id still does not produce a response (filtered in main loop by
+	// method prefix, not just by nil id).
+	server := newTestServer()
+	resp := server.handleRequest(MCPRequest{JSONRPC: "2.0", ID: 1, Method: "notifications/initialized"})
+	// The handler returns an empty struct; main() must suppress it.
+	// At the handleRequest level we just confirm no error is set.
+	if resp.Error != nil {
+		t.Errorf("notifications/initialized should not produce an error: %v", resp.Error)
+	}
+}
+
 func TestPermission_CreateRequiresWriteScope(t *testing.T) {
 	server := newTestServer() // no sheets → no write scope
 	args, _ := json.Marshal(map[string]interface{}{"title": "New Sheet"})

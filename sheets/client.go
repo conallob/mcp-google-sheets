@@ -388,6 +388,8 @@ func (c *Client) do(req *http.Request, out interface{}) error {
 	if err != nil {
 		return fmt.Errorf("read response body: %v", err)
 	}
+	// == is correct here (not >=): io.LimitReader returns at most maxResponseBytes
+	// bytes, so len == limit is the precise signal that the body was truncated.
 	if int64(len(bodyBytes)) == maxResponseBytes {
 		return fmt.Errorf("response body exceeds %d MiB limit; use a smaller range", maxResponseBytes/(1024*1024))
 	}

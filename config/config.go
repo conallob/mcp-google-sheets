@@ -29,7 +29,8 @@ type SpreadsheetPermission struct {
 
 // Config holds the set of spreadsheets this MCP server is permitted to access.
 type Config struct {
-	Sheets []SpreadsheetPermission `json:"sheets"`
+	Sheets     []SpreadsheetPermission `json:"sheets"`
+	lookupByID map[string]SpreadsheetPermission // populated by Load(); nil for configs built directly in tests
 }
 
 // Load reads the sheets permissions config from the path specified by
@@ -76,6 +77,14 @@ func Load() (*Config, error) {
 		seen[sheet.ID] = struct{}{}
 	}
 
+	// Build O(1) lookup index. Config is immutable after Load() so the map is
+	// safe to share without a mutex.
+	lookup := make(map[string]SpreadsheetPermission, len(cfg.Sheets))
+	for _, s := range cfg.Sheets {
+		lookup[s.ID] = s
+	}
+	cfg.lookupByID = lookup
+
 	return &cfg, nil
 }
 
@@ -108,6 +117,12 @@ func (c *Config) AllowedSheets() []SpreadsheetPermission {
 }
 
 func (c *Config) find(spreadsheetID string) (SpreadsheetPermission, bool) {
+	if c.lookupByID != nil {
+		s, ok := c.lookupByID[spreadsheetID]
+		return s, ok
+	}
+	// Fallback linear scan for Config values constructed directly (e.g. in tests)
+	// without going through Load().
 	for _, s := range c.Sheets {
 		if s.ID == spreadsheetID {
 			return s, true
