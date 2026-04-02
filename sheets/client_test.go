@@ -15,10 +15,7 @@ import (
 // intercepted without network access.
 func newTestClient(handler http.HandlerFunc) (*Client, *httptest.Server) {
 	server := httptest.NewServer(handler)
-	client := &Client{
-		http:    server.Client(),
-		baseURL: server.URL,
-	}
+	client := NewClientWithBaseURL(server.Client(), server.URL)
 	return client, server
 }
 
@@ -27,7 +24,7 @@ func TestNewClient(t *testing.T) {
 	if client == nil {
 		t.Fatal("NewClient returned nil")
 	}
-	if client.http == nil {
+	if client.httpClient == nil {
 		t.Error("Client http should not be nil")
 	}
 	if client.baseURL != productionBaseURL {
@@ -62,13 +59,18 @@ func TestReadSheet_Success(t *testing.T) {
 }
 
 func TestReadSheet_EmptyRange(t *testing.T) {
+	// When range is empty the URL should end at /values (no range path segment),
+	// allowing the Sheets API to return the first sheet regardless of its name.
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !containsStr(r.URL.Path, "Sheet1") {
-			t.Errorf("Expected default range 'Sheet1', got path: %s", r.URL.Path)
+		if containsStr(r.URL.Path, "Sheet1") {
+			t.Errorf("Should not include 'Sheet1' in path when range is empty; got: %s", r.URL.Path)
+		}
+		if !containsStr(r.URL.Path, "/values") {
+			t.Errorf("Path should end with /values, got: %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"range":  "Sheet1!A1:A1",
+			"range":  "FirstTab!A1:A1",
 			"values": [][]interface{}{{"Data"}},
 		})
 	})
@@ -506,7 +508,7 @@ func TestClient_NilHTTPClient(t *testing.T) {
 	if client == nil {
 		t.Error("NewClient should not return nil with nil http client")
 	}
-	if client.http != nil {
+	if client.httpClient != nil {
 		t.Error("Expected nil http client when initialized with nil")
 	}
 }

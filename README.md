@@ -320,13 +320,11 @@ https://docs.google.com/spreadsheets/d/1abc123def456ghi789/edit
 
 If you need to re-authenticate (e.g., revoked access or different account):
 ```bash
-# Remove the stored token (and scope sidecar)
+# Remove the stored token
 rm ~/.config/mcp-google-sheets/token.json
-rm ~/.config/mcp-google-sheets/token.json.scope
 
 # Or if using custom token location
 rm /path/to/your/token.json
-rm /path/to/your/token.json.scope
 
 # Run the server again to re-authenticate
 ./mcp-google-sheets

@@ -217,7 +217,7 @@ func (s *MCPServer) handleToolsList(req MCPRequest) MCPResponse {
 		},
 		{
 			"name":        "create_spreadsheet",
-			"description": "Create a new Google Spreadsheet. Requires at least one sheet to be configured with readwrite access (confirming the OAuth token has write permission). NOTE: the new spreadsheet's ID is returned but is NOT automatically added to the server's allowed-sheets config — add it manually to sheets.json and restart the server before using other tools on it.",
+			"description": "Create a new Google Spreadsheet. Requires at least one sheet configured with readwrite access. The returned spreadsheet ID must be added to the server's config before it can be accessed by other tools.",
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -280,9 +280,9 @@ func (s *MCPServer) handleToolsCall(req MCPRequest) MCPResponse {
 		return errResponse(req.ID, -32000, err.Error())
 	}
 
-	text, jsonErr := json.MarshalIndent(result, "", "  ")
+	text, jsonErr := json.Marshal(result)
 	if jsonErr != nil {
-		text = []byte(fmt.Sprintf("%v", result))
+		return errResponse(req.ID, -32000, fmt.Sprintf("failed to encode result: %v", jsonErr))
 	}
 
 	return MCPResponse{

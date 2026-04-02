@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -218,14 +220,14 @@ func TestSaveAndLoadToken(t *testing.T) {
 		Expiry:       time.Now().Add(1 * time.Hour),
 	}
 
-	if err := cfg.saveToken(original); err != nil {
+	if err := cfg.saveToken(original, ScopeReadWrite); err != nil {
 		t.Fatalf("saveToken failed: %v", err)
 	}
 	if _, err := os.Stat(tokenFile); os.IsNotExist(err) {
 		t.Error("Token file was not created")
 	}
 
-	loaded, err := cfg.loadToken()
+	loaded, scope, err := cfg.loadToken()
 	if err != nil {
 		t.Fatalf("loadToken failed: %v", err)
 	}
@@ -235,11 +237,14 @@ func TestSaveAndLoadToken(t *testing.T) {
 	if loaded.RefreshToken != original.RefreshToken {
 		t.Errorf("RefreshToken mismatch")
 	}
+	if scope != ScopeReadWrite {
+		t.Errorf("Scope mismatch: want %q, got %q", ScopeReadWrite, scope)
+	}
 }
 
 func TestLoadToken_FileDoesNotExist(t *testing.T) {
 	cfg := &Config{TokenFile: "/nonexistent/token.json"}
-	_, err := cfg.loadToken()
+	_, _, err := cfg.loadToken()
 	if err == nil {
 		t.Error("Expected error for non-existent token file")
 	}
@@ -247,10 +252,12 @@ func TestLoadToken_FileDoesNotExist(t *testing.T) {
 
 func TestLoadToken_InvalidJSON(t *testing.T) {
 	tokenFile := filepath.Join(t.TempDir(), "invalid.json")
-	os.WriteFile(tokenFile, []byte("not valid json"), 0600)
+	if err := os.WriteFile(tokenFile, []byte("not valid json"), 0600); err != nil {
+		t.Fatalf("write token file: %v", err)
+	}
 
 	cfg := &Config{TokenFile: tokenFile}
-	_, err := cfg.loadToken()
+	_, _, err := cfg.loadToken()
 	if err == nil {
 		t.Error("Expected error for invalid JSON token file")
 	}
@@ -270,7 +277,7 @@ func TestGetClient_WithValidToken(t *testing.T) {
 		TokenType:    "Bearer",
 		Expiry:       time.Now().Add(1 * time.Hour),
 	}
-	if err := cfg.saveToken(testToken); err != nil {
+	if err := cfg.saveToken(testToken, ScopeReadOnly); err != nil {
 		t.Fatalf("saveToken failed: %v", err)
 	}
 
@@ -292,7 +299,7 @@ func TestTokenSecurity_FilePermissions(t *testing.T) {
 	}
 	tok := &oauth2.Token{AccessToken: "tok", RefreshToken: "ref", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}
 
-	if err := cfg.saveToken(tok); err != nil {
+	if err := cfg.saveToken(tok, ScopeReadOnly); err != nil {
 		t.Fatalf("saveToken failed: %v", err)
 	}
 
@@ -314,7 +321,7 @@ func TestTokenSecurity_DirectoryPermissions(t *testing.T) {
 	}
 	tok := &oauth2.Token{AccessToken: "tok", RefreshToken: "ref", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}
 
-	if err := cfg.saveToken(tok); err != nil {
+	if err := cfg.saveToken(tok, ScopeReadOnly); err != nil {
 		t.Fatalf("saveToken failed: %v", err)
 	}
 
@@ -337,7 +344,7 @@ func TestSaveToken_DirectoryCreation(t *testing.T) {
 	}
 	tok := &oauth2.Token{AccessToken: "tok", RefreshToken: "ref", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}
 
-	if err := cfg.saveToken(tok); err != nil {
+	if err := cfg.saveToken(tok, ScopeReadOnly); err != nil {
 		t.Fatalf("saveToken failed: %v", err)
 	}
 
@@ -383,6 +390,69 @@ func TestConfig_Constants(t *testing.T) {
 	}
 }
 
+// TestOAuthCSRF_StateMismatchRejected verifies that the OAuth callback handler
+// returns HTTP 400 and sends an error when the state parameter does not match
+// the one embedded in the auth URL.
+func TestOAuthCSRF_StateMismatchRejected(t *testing.T) {
+	codeCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+
+	srv := httptest.NewServer(newOAuthCallbackMux("correct-state", codeCh, errCh))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/oauth/callback?state=wrong-state&code=abc123")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("Expected 400, got %d", resp.StatusCode)
+	}
+	select {
+	case e := <-errCh:
+		if !strings.Contains(e.Error(), "state mismatch") {
+			t.Errorf("Expected state mismatch error, got: %v", e)
+		}
+	default:
+		t.Error("Expected error on errCh")
+	}
+	// Code channel must be empty — mismatched state must not forward the code.
+	select {
+	case code := <-codeCh:
+		t.Errorf("Should not have received code, got: %s", code)
+	default:
+	}
+}
+
+// TestOAuthCSRF_ValidStateAccepted verifies that a matching state + code
+// passes through the callback handler successfully.
+func TestOAuthCSRF_ValidStateAccepted(t *testing.T) {
+	codeCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+
+	srv := httptest.NewServer(newOAuthCallbackMux("valid-state", codeCh, errCh))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/oauth/callback?state=valid-state&code=mycode")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected 200, got %d", resp.StatusCode)
+	}
+	select {
+	case code := <-codeCh:
+		if code != "mycode" {
+			t.Errorf("Expected code 'mycode', got %q", code)
+		}
+	default:
+		t.Error("Expected code on codeCh")
+	}
+}
+
 // Benchmarks
 
 func BenchmarkLoadConfig(b *testing.B) {
@@ -412,7 +482,7 @@ func BenchmarkSaveToken(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if err := cfg.saveToken(tok); err != nil {
+		if err := cfg.saveToken(tok, ScopeReadOnly); err != nil {
 			b.Fatalf("saveToken failed: %v", err)
 		}
 	}

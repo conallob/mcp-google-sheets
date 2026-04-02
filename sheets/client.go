@@ -19,13 +19,19 @@ const maxResponseBytes = 50 * 1024 * 1024 // 50 MiB
 
 // Client wraps an authenticated HTTP client for the Google Sheets REST API.
 type Client struct {
-	http    *http.Client
-	baseURL string // defaults to productionBaseURL; overridable for tests
+	httpClient *http.Client
+	baseURL    string // defaults to productionBaseURL; overridable for tests
 }
 
 // NewClient creates a new Sheets client from an OAuth2-authenticated HTTP client.
 func NewClient(httpClient *http.Client) *Client {
-	return &Client{http: httpClient, baseURL: productionBaseURL}
+	return &Client{httpClient: httpClient, baseURL: productionBaseURL}
+}
+
+// NewClientWithBaseURL creates a new Sheets client with a custom base URL.
+// Intended for tests that need to point the client at an httptest.Server.
+func NewClientWithBaseURL(httpClient *http.Client, baseURL string) *Client {
+	return &Client{httpClient: httpClient, baseURL: baseURL}
 }
 
 // ── API types ─────────────────────────────────────────────────────────────────
@@ -50,7 +56,7 @@ type gridProperties struct {
 }
 
 type sheetProperties struct {
-	SheetId        int64          `json:"sheetId,omitempty"`
+	SheetID        int64          `json:"sheetId,omitempty"`
 	Title          string         `json:"title,omitempty"`
 	Index          int64          `json:"index,omitempty"`
 	SheetType      string         `json:"sheetType,omitempty"`
@@ -98,15 +104,15 @@ type batchUpdateRequest struct {
 // ── Read ──────────────────────────────────────────────────────────────────────
 
 // ReadSheet reads values from the given range (A1 notation). When range is
-// empty it defaults to the tab named "Sheet1". If the spreadsheet uses a
-// different tab name the caller should supply an explicit range (e.g. "Data"
-// or "Data!A1:Z").
+// empty the call omits the range parameter entirely; the Sheets API then
+// returns all values from the first sheet tab regardless of its name.
+// Supplying an explicit range (e.g. "Data" or "Data!A1:Z") is recommended
+// when the target tab might not be the first one.
 func (c *Client) ReadSheet(ctx context.Context, spreadsheetID, readRange string) (interface{}, error) {
-	if readRange == "" {
-		readRange = "Sheet1"
+	endpoint := fmt.Sprintf("%s/%s/values", c.baseURL, url.PathEscape(spreadsheetID))
+	if readRange != "" {
+		endpoint = fmt.Sprintf("%s/%s/values/%s", c.baseURL, url.PathEscape(spreadsheetID), url.PathEscape(readRange))
 	}
-
-	endpoint := fmt.Sprintf("%s/%s/values/%s", c.baseURL, url.PathEscape(spreadsheetID), url.PathEscape(readRange))
 	var vr valueRange
 	if err := c.get(ctx, endpoint, &vr); err != nil {
 		return nil, fmt.Errorf("read sheet: %v", err)
@@ -220,7 +226,7 @@ func (c *Client) GetSpreadsheetInfo(ctx context.Context, spreadsheetID string) (
 	for i, sh := range ss.Sheets {
 		p := sh.Properties
 		sheetInfo[i] = map[string]interface{}{
-			"sheet_id":    p.SheetId,
+			"sheet_id":    p.SheetID,
 			"title":       p.Title,
 			"index":       p.Index,
 			"sheet_type":  p.SheetType,
@@ -308,7 +314,7 @@ func (c *Client) AddSheet(ctx context.Context, spreadsheetID, sheetName string) 
 	if len(resp.Replies) > 0 && resp.Replies[0].AddSheet != nil {
 		p := resp.Replies[0].AddSheet.Properties
 		return map[string]interface{}{
-			"sheet_id": p.SheetId,
+			"sheet_id": p.SheetID,
 			"title":    p.Title,
 			"index":    p.Index,
 			"message":  "Sheet added successfully",
@@ -350,7 +356,7 @@ func (c *Client) doWithBody(ctx context.Context, method, endpoint string, body, 
 }
 
 func (c *Client) do(req *http.Request, out interface{}) error {
-	resp, err := c.http.Do(req)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("HTTP %s %s: %v", req.Method, req.URL, err)
 	}
@@ -359,6 +365,9 @@ func (c *Client) do(req *http.Request, out interface{}) error {
 	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
 		return fmt.Errorf("read response body: %v", err)
+	}
+	if int64(len(bodyBytes)) == maxResponseBytes {
+		return fmt.Errorf("response body exceeds %d MiB limit; use a smaller range", maxResponseBytes/(1024*1024))
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

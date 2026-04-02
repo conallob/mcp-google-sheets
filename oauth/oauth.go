@@ -120,13 +120,15 @@ func (c *Config) GetClient(ctx context.Context, writeAccess bool) (*http.Client,
 	}
 	cfg := c.oauthConfig(scope)
 
-	token, err := c.loadToken()
+	token, cachedScope, err := c.loadToken()
 	if err == nil {
 		// Cached token exists. If the scope changed (e.g. config now needs
 		// write access but token was read-only) we must re-authorise.
-		// We read the scope from the sidecar file rather than token.Extra because
-		// oauth2.Token.raw is unexported and not preserved across marshal/unmarshal.
-		if writeAccess && !strings.Contains(c.loadScope(), ScopeReadWrite) {
+		// Note: a token with ScopeReadWrite that is later configured for
+		// read-only will continue to use the broader token — this is expected
+		// behaviour since narrowing scope requires user interaction to revoke
+		// the grant.
+		if writeAccess && !strings.Contains(cachedScope, ScopeReadWrite) {
 			log.Println("Config requires write access but cached token is read-only. Re-authorising...")
 			return c.authorise(ctx, cfg)
 		}
@@ -143,17 +145,25 @@ func (c *Config) authorise(ctx context.Context, cfg *oauth2.Config) (*http.Clien
 	if err != nil {
 		return nil, fmt.Errorf("OAuth flow failed: %v", err)
 	}
-	if err := c.saveToken(token); err != nil {
+	// Store the granted scope alongside the token so it survives reload
+	// (oauth2.Token.raw is unexported and not round-tripped by encoding/json).
+	grantedScope := ""
+	if len(cfg.Scopes) > 0 {
+		grantedScope = cfg.Scopes[0]
+	}
+	if err := c.saveToken(token, grantedScope); err != nil {
 		log.Printf("Warning: unable to cache token: %v", err)
 	}
-	// Persist the granted scope separately so tokenHasWriteScope works after
-	// reload (oauth2.Token.raw is unexported and not round-tripped by json).
-	if len(cfg.Scopes) > 0 {
-		if err := c.saveScope(cfg.Scopes[0]); err != nil {
-			log.Printf("Warning: unable to cache token scope: %v", err)
-		}
-	}
 	return cfg.Client(ctx, token), nil
+}
+
+// persistedToken is the on-disk format for cached OAuth credentials.
+// Wrapping oauth2.Token in a struct lets us store the granted scope explicitly,
+// since oauth2.Token.raw is unexported and is not preserved through
+// encoding/json round-trips.
+type persistedToken struct {
+	Token *oauth2.Token `json:"token"`
+	Scope string        `json:"scope"`
 }
 
 // oauthConfig builds an oauth2.Config for the given scope.
@@ -167,19 +177,40 @@ func (c *Config) oauthConfig(scope string) *oauth2.Config {
 	}
 }
 
-// loadToken reads a cached token from disk.
-func (c *Config) loadToken() (*oauth2.Token, error) {
-	f, err := os.Open(c.TokenFile)
+// loadToken reads a cached token and its scope from disk.
+// It supports both the current persistedToken format and the legacy bare
+// oauth2.Token format (which returns an empty scope, triggering re-auth for
+// write-access requests).
+func (c *Config) loadToken() (*oauth2.Token, string, error) {
+	data, err := os.ReadFile(c.TokenFile)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	defer f.Close()
-	t := &oauth2.Token{}
-	return t, json.NewDecoder(f).Decode(t)
+
+	// Try the current wrapper format first.
+	var pt persistedToken
+	if err := json.Unmarshal(data, &pt); err == nil && pt.Token != nil {
+		return pt.Token, pt.Scope, nil
+	}
+
+	// Fall back to the legacy bare-token format for tokens written by older
+	// versions. Scope will be empty, so re-auth is triggered on the next
+	// write-access request.
+	var t oauth2.Token
+	if err := json.Unmarshal(data, &t); err != nil {
+		return nil, "", fmt.Errorf("parse token file: %v", err)
+	}
+	if t.AccessToken == "" {
+		return nil, "", fmt.Errorf("invalid token file: no access token")
+	}
+	return &t, "", nil
 }
 
-// saveToken persists a token to disk with restricted permissions.
-func (c *Config) saveToken(token *oauth2.Token) error {
+// saveToken persists a token (and optional scope) to disk with restricted
+// permissions. The directory is created if it does not exist. Callers that
+// know the granted scope should pass it as the second argument so that scope
+// detection works correctly after the token is reloaded.
+func (c *Config) saveToken(token *oauth2.Token, scope ...string) error {
 	dir := filepath.Dir(c.TokenFile)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("unable to create token directory: %v", err)
@@ -189,22 +220,19 @@ func (c *Config) saveToken(token *oauth2.Token) error {
 		return fmt.Errorf("unable to open token file for writing: %v", err)
 	}
 	defer f.Close()
-	return json.NewEncoder(f).Encode(token)
+
+	grantedScope := ""
+	if len(scope) > 0 {
+		grantedScope = scope[0]
+	}
+	return json.NewEncoder(f).Encode(persistedToken{Token: token, Scope: grantedScope})
 }
 
-// getTokenFromWeb runs a local HTTP server to receive the OAuth callback and
-// exchanges the authorization code for a token.
-func (c *Config) getTokenFromWeb(ctx context.Context, cfg *oauth2.Config) (*oauth2.Token, error) {
-	// Generate a random state token to protect against CSRF attacks.
-	stateBytes := make([]byte, 16)
-	if _, err := rand.Read(stateBytes); err != nil {
-		return nil, fmt.Errorf("generate OAuth state token: %v", err)
-	}
-	state := hex.EncodeToString(stateBytes)
-
-	codeCh := make(chan string, 1)
-	errCh := make(chan error, 1)
-
+// newOAuthCallbackMux builds the HTTP mux for the OAuth redirect callback.
+// It verifies the state parameter to prevent CSRF, then forwards the code.
+// Separated from getTokenFromWeb so that the CSRF logic can be unit-tested
+// without starting a real listener.
+func newOAuthCallbackMux(state string, codeCh chan<- string, errCh chan<- error) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/oauth/callback", func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.Query().Get("state"); got != state {
@@ -225,8 +253,27 @@ func (c *Config) getTokenFromWeb(ctx context.Context, cfg *oauth2.Config) (*oaut
 </body></html>`)
 		codeCh <- code
 	})
+	return mux
+}
 
-	srv := &http.Server{Addr: ":8080", Handler: mux}
+// getTokenFromWeb runs a local HTTP server to receive the OAuth callback and
+// exchanges the authorization code for a token.
+func (c *Config) getTokenFromWeb(ctx context.Context, cfg *oauth2.Config) (*oauth2.Token, error) {
+	// Generate a random state token to protect against CSRF attacks.
+	stateBytes := make([]byte, 16)
+	if _, err := rand.Read(stateBytes); err != nil {
+		return nil, fmt.Errorf("generate OAuth state token: %v", err)
+	}
+	state := hex.EncodeToString(stateBytes)
+
+	codeCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+
+	mux := newOAuthCallbackMux(state, codeCh, errCh)
+
+	// Bind to loopback only — the callback must not be reachable from other
+	// machines on the same network.
+	srv := &http.Server{Addr: "127.0.0.1:8080", Handler: mux}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- fmt.Errorf("OAuth callback server error: %v", err)
@@ -256,22 +303,6 @@ func (c *Config) getTokenFromWeb(ctx context.Context, cfg *oauth2.Config) (*oaut
 	}
 }
 
-// saveScope writes the granted OAuth scope to a sidecar file alongside the
-// token, so it survives process restarts.
-func (c *Config) saveScope(scope string) error {
-	return os.WriteFile(c.TokenFile+".scope", []byte(scope), 0600)
-}
-
-// loadScope reads the persisted scope from the sidecar file. Returns an empty
-// string if the file is absent (e.g. first run or pre-existing token).
-func (c *Config) loadScope() string {
-	data, err := os.ReadFile(c.TokenFile + ".scope")
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(data))
-}
-
 func redirectURI() string {
 	if v := os.Getenv("GOOGLE_OAUTH_REDIRECT_URI"); v != "" {
 		return v
@@ -287,9 +318,7 @@ func tokenFilePath() string {
 	if err != nil {
 		return TokenFileName
 	}
-	dir := filepath.Join(homeDir, ".config", "mcp-google-sheets")
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		log.Printf("Warning: unable to create token directory %s: %v", dir, err)
-	}
-	return filepath.Join(dir, TokenFileName)
+	// Directory creation is deferred to saveToken so that tokenFilePath
+	// remains a pure path getter without filesystem side effects.
+	return filepath.Join(homeDir, ".config", "mcp-google-sheets", TokenFileName)
 }

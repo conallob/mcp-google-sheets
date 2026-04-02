@@ -26,14 +26,22 @@ func newTestServer() *MCPServer {
 }
 
 // newTestServerWithSheet returns an MCPServer that has one configured sheet
-// with the given access level and a nil sheets.Client (for permission testing).
+// with the given access level. The sheets client points at a local test server
+// returning HTTP 500, so any API call that passes the permission check fails
+// explicitly rather than panicking on a nil client.
 func newTestServerWithSheet(id string, access config.Access) *MCPServer {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	// srv is not closed here intentionally: it lives for the duration of the
+	// test binary. In practice these tests never reach the HTTP layer (they
+	// return at the permission check), so the server is never called.
 	return &MCPServer{
 		ctx: context.Background(),
 		cfg: &config.Config{
 			Sheets: []config.SpreadsheetPermission{{ID: id, Access: access}},
 		},
-		sheetsClient: sheets.NewClient(nil),
+		sheetsClient: sheets.NewClientWithBaseURL(srv.Client(), srv.URL),
 	}
 }
 
@@ -104,9 +112,14 @@ func TestMCPRequest_WithDifferentIDTypes(t *testing.T) {
 
 func TestMCPResponse_ErrorResponse(t *testing.T) {
 	resp := MCPResponse{JSONRPC: "2.0", ID: 1, Error: &MCPError{Code: -32700, Message: "Parse error"}}
-	data, _ := json.Marshal(resp)
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
 	var parsed MCPResponse
-	json.Unmarshal(data, &parsed)
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
 	if parsed.Error == nil || parsed.Error.Code != -32700 {
 		t.Errorf("Unexpected error: %v", parsed.Error)
 	}
@@ -121,9 +134,14 @@ func TestMCPResponse_BothResultAndError(t *testing.T) {
 		Result: map[string]interface{}{"data": "test"},
 		Error:  &MCPError{Code: -32000, Message: "Error"},
 	}
-	data, _ := json.Marshal(resp)
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
 	var parsed map[string]interface{}
-	json.Unmarshal(data, &parsed)
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
 	if _, ok := parsed["result"]; !ok {
 		t.Error("Result should be in JSON")
 	}
@@ -270,14 +288,15 @@ func TestAllToolsSchemasAreValid(t *testing.T) {
 		if inputSchema["type"] != "object" {
 			t.Errorf("Tool %q: type should be 'object'", name)
 		}
-		// list_sheets has no required fields; other tools should have properties.
+		// All tools must declare a required array (may be empty for no-arg tools).
+		if _, ok := inputSchema["required"].([]string); !ok {
+			t.Errorf("Tool %q has invalid required array", name)
+		}
+		// Tools with arguments must have a non-empty properties map.
 		if name != "list_sheets" {
 			props, ok := inputSchema["properties"].(map[string]interface{})
 			if !ok || len(props) == 0 {
 				t.Errorf("Tool %q has no properties", name)
-			}
-			if _, ok := inputSchema["required"].([]string); !ok {
-				t.Errorf("Tool %q has invalid required array", name)
 			}
 		}
 	}
@@ -424,21 +443,20 @@ func TestPermission_WriteDeniedForReadOnlySheet(t *testing.T) {
 }
 
 func TestPermission_ReadAllowedForConfiguredSheet(t *testing.T) {
-	// A configured sheet should pass the config check. We use a real HTTP server
-	// so there is no nil-pointer panic; the server returns 403 to simulate a
-	// normal API error (NOT a config permission error).
+	// A configured sheet should pass the config check. The test HTTP server
+	// returns 403 to simulate a normal API error (NOT a config permission error).
+	// NewClientWithBaseURL ensures requests go to the test server, not googleapis.com.
 	srv := httpTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		fmt.Fprint(w, `{"error":{"code":403,"message":"forbidden","status":"PERMISSION_DENIED"}}`)
 	})
-	defer srv.Close()
 
 	mcpServer := &MCPServer{
 		ctx: context.Background(),
 		cfg: &config.Config{
 			Sheets: []config.SpreadsheetPermission{{ID: "allowed-id", Access: config.AccessRead}},
 		},
-		sheetsClient: sheets.NewClient(srv.Client()),
+		sheetsClient: sheets.NewClientWithBaseURL(srv.Client(), srv.URL),
 	}
 	args, _ := json.Marshal(map[string]interface{}{"spreadsheet_id": "allowed-id"})
 	_, err := mcpServer.toolReadSheet(args)
