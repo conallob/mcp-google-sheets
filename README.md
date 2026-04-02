@@ -162,6 +162,8 @@ The server only accesses spreadsheets that are explicitly listed in a config fil
 
 Any tool call targeting a spreadsheet not listed here is denied, regardless of what the authenticated Google account can access.
 
+> **Important:** Removing a `readwrite` entry from `sheets.json` does **not** revoke the write scope on the cached OAuth token. The token retains its granted permissions until it expires or is explicitly revoked. To immediately drop write access, delete `~/.config/mcp-google-sheets/token.json` and restart the server — you will be prompted to re-authorize with the narrower (read-only) scope.
+
 ## Available Tools
 
 ### read_sheet
@@ -241,6 +243,8 @@ Create a new Google Spreadsheet.
 **Returns:** Spreadsheet ID and URL.
 
 > **Note:** After creation, the new spreadsheet ID is not automatically added to `sheets.json`. Add it manually with the desired access level and restart the server before using other tools on it.
+
+> **Permission model:** `create_spreadsheet` requires at least one sheet in `sheets.json` with `"access": "readwrite"`. Because the `readwrite` OAuth scope grants write access to _all_ spreadsheets in the authenticated account (not just those listed in `sheets.json`), any `readwrite` entry effectively allows creating new spreadsheets anywhere in the user's Google Drive. If you only need to write to specific sheets and want to prevent creation of new spreadsheets, keep all entries set to `"access": "read"`.
 
 ### get_spreadsheet_info
 

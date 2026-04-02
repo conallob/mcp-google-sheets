@@ -21,15 +21,12 @@ func writeConfig(t *testing.T, cfg Config) string {
 	return path
 }
 
-func TestLoad_FileNotExist_ReturnsEmpty(t *testing.T) {
+func TestLoad_FileNotExist_EnvSet_ReturnsError(t *testing.T) {
 	t.Setenv("GOOGLE_SHEETS_CONFIG", "/nonexistent/sheets.json")
 
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Expected empty config, got error: %v", err)
-	}
-	if len(cfg.Sheets) != 0 {
-		t.Errorf("Expected empty config, got %d sheets", len(cfg.Sheets))
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Expected error when GOOGLE_SHEETS_CONFIG points to a missing file")
 	}
 }
 

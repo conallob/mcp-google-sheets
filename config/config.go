@@ -34,9 +34,11 @@ type Config struct {
 
 // Load reads the sheets permissions config from the path specified by
 // GOOGLE_SHEETS_CONFIG, or from ~/.config/mcp-google-sheets/sheets.json.
-// If the file does not exist, an empty config is returned (no sheets allowed).
+// If the default path does not exist, an empty config is returned (no sheets allowed).
+// If GOOGLE_SHEETS_CONFIG is explicitly set but the file does not exist, an error is returned.
 func Load() (*Config, error) {
-	configPath := os.Getenv("GOOGLE_SHEETS_CONFIG")
+	envPath := os.Getenv("GOOGLE_SHEETS_CONFIG")
+	configPath := envPath
 	if configPath == "" {
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
@@ -47,7 +49,8 @@ func Load() (*Config, error) {
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if os.IsNotExist(err) && envPath == "" {
+			// Default path is missing — treat as empty config (no sheets allowed).
 			return &Config{Sheets: []SpreadsheetPermission{}}, nil
 		}
 		return nil, fmt.Errorf("unable to read sheets config at %s: %v", configPath, err)
@@ -99,9 +102,9 @@ func (c *Config) NeedsWriteScope() bool {
 	return false
 }
 
-// AllowedSheets returns the full list of configured sheet permissions.
+// AllowedSheets returns a copy of the configured sheet permissions.
 func (c *Config) AllowedSheets() []SpreadsheetPermission {
-	return c.Sheets
+	return append([]SpreadsheetPermission(nil), c.Sheets...)
 }
 
 func (c *Config) find(spreadsheetID string) (SpreadsheetPermission, bool) {

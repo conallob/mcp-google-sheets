@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -614,17 +613,8 @@ func TestMCPServer_Structure(t *testing.T) {
 // ── NewMCPServer error handling ────────────────────────────────────────────
 
 func TestNewMCPServer_ErrorHandling(t *testing.T) {
-	old1, old2 := os.Getenv("GOOGLE_OAUTH_CLIENT_ID"), os.Getenv("GOOGLE_OAUTH_CLIENT_SECRET")
-	os.Unsetenv("GOOGLE_OAUTH_CLIENT_ID")
-	os.Unsetenv("GOOGLE_OAUTH_CLIENT_SECRET")
-	defer func() {
-		if old1 != "" {
-			os.Setenv("GOOGLE_OAUTH_CLIENT_ID", old1)
-		}
-		if old2 != "" {
-			os.Setenv("GOOGLE_OAUTH_CLIENT_SECRET", old2)
-		}
-	}()
+	t.Setenv("GOOGLE_OAUTH_CLIENT_ID", "")
+	t.Setenv("GOOGLE_OAUTH_CLIENT_SECRET", "")
 
 	_, err := NewMCPServer(context.Background())
 	if err == nil {

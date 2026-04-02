@@ -413,6 +413,9 @@ func (s *MCPServer) toolCreateSpreadsheet(args json.RawMessage) (interface{}, er
 	if err := json.Unmarshal(args, &p); err != nil {
 		return nil, err
 	}
+	if p.Title == "" {
+		return nil, fmt.Errorf("title is required")
+	}
 	// create_spreadsheet is not tied to a pre-existing spreadsheet ID, so we
 	// can't use CanWrite(id). Instead we gate on NeedsWriteScope(): if any
 	// configured sheet is readwrite the OAuth token carries write permission,
