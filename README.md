@@ -9,9 +9,16 @@ A Model Context Protocol (MCP) server written in Go that provides native integra
 - **Append Data**: Add new rows to sheets without overwriting existing data
 - **Create Spreadsheets**: Create new Google Sheets programmatically
 - **Sheet Management**: Add new sheets (tabs), clear data, get spreadsheet metadata
-- **Batch Operations**: Perform multiple updates in a single request for efficiency
+- **Per-file access control**: Explicitly allowlist each spreadsheet as `read` or `readwrite`
 - **Native Go Implementation**: Fast, lightweight, and efficient
 - **MCP Protocol**: Full compatibility with Claude Code and other MCP clients
+
+## Breaking Changes
+
+### v2.0.0
+
+- **`batch_update` tool removed**: The generic batch update tool has been removed. Operations like adding sheets, formatting, etc. can be done via the dedicated tools (`add_sheet`, `write_sheet`, etc.). If you relied on `batch_update` for formatting or other low-level API operations, you will now receive a `tool not found` error — there is no direct migration path for those use cases.
+- **Per-file access control required**: All spreadsheet IDs must now be explicitly listed in `sheets.json` with their access level. The server no longer grants access to all sheets the authenticated user can see.
 
 ## Prerequisites
 
@@ -128,6 +135,35 @@ For other MCP clients, configure the server with:
 - **Environment** (optional): Set `GOOGLE_OAUTH_CREDENTIALS` to your OAuth credentials file path
 - **Protocol**: stdio (standard input/output)
 
+## Sheets Access Control
+
+The server only accesses spreadsheets that are explicitly listed in a config file. By default this file lives at `~/.config/mcp-google-sheets/sheets.json`, or you can override the path with `GOOGLE_SHEETS_CONFIG`.
+
+```json
+{
+  "sheets": [
+    {
+      "id": "1abc123def456ghi789",
+      "name": "My Budget",
+      "access": "readwrite"
+    },
+    {
+      "id": "2xyz987uvw654rst321",
+      "name": "Shared Report",
+      "access": "read"
+    }
+  ]
+}
+```
+
+- `id` (required): The spreadsheet ID from the URL.
+- `name` (optional): Human-readable label, shown by `list_sheets`.
+- `access`: `"read"` (read-only) or `"readwrite"` (full read/write).
+
+Any tool call targeting a spreadsheet not listed here is denied, regardless of what the authenticated Google account can access.
+
+> **Important:** Removing a `readwrite` entry from `sheets.json` does **not** revoke the write scope on the cached OAuth token. The token retains its granted permissions until it expires or is explicitly revoked. To immediately drop write access, delete `~/.config/mcp-google-sheets/token.json` and restart the server — you will be prompted to re-authorize with the narrower (read-only) scope.
+
 ## Available Tools
 
 ### read_sheet
@@ -204,7 +240,11 @@ Create a new Google Spreadsheet.
 }
 ```
 
-**Returns:** Spreadsheet ID and URL
+**Returns:** Spreadsheet ID and URL.
+
+> **Note:** After creation, the new spreadsheet ID is not automatically added to `sheets.json`. Add it manually with the desired access level and restart the server before using other tools on it.
+
+> **Permission model:** `create_spreadsheet` requires at least one sheet in `sheets.json` with `"access": "readwrite"`. Because the `readwrite` OAuth scope grants write access to _all_ spreadsheets in the authenticated account (not just those listed in `sheets.json`), any `readwrite` entry effectively allows creating new spreadsheets anywhere in the user's Google Drive. If you only need to write to specific sheets and want to prevent creation of new spreadsheets, keep all entries set to `"access": "read"`.
 
 ### get_spreadsheet_info
 
@@ -230,14 +270,6 @@ Clear all data in a specified range.
 **Parameters:**
 - `spreadsheet_id` (required): The spreadsheet ID
 - `range` (required): A1 notation range to clear
-
-### batch_update
-
-Perform multiple operations in a single request. Supports complex operations like formatting, conditional formatting, adding/deleting rows, etc.
-
-**Parameters:**
-- `spreadsheet_id` (required): The spreadsheet ID
-- `requests` (required): Array of request objects (see [Google Sheets API documentation](https://developers.google.com/sheets/api/reference/rest/v4/spreadsheets/request))
 
 ## Usage Examples
 
@@ -315,10 +347,18 @@ rm /path/to/your/token.json
 ```
 mcp-google-sheets/
 ├── main.go                      # MCP server implementation
+├── main_test.go                 # Integration tests
+├── config/
+│   ├── config.go               # Sheets access-control config
+│   └── config_test.go
+├── oauth/
+│   ├── oauth.go                # OAuth 2.0 flow
+│   └── oauth_test.go
 ├── sheets/
-│   └── client.go               # Google Sheets API client
+│   ├── client.go               # Google Sheets REST API client
+│   └── client_test.go
 ├── go.mod                      # Go module definition
-├── credentials.example.json    # Example credentials file
+├── sheets.example.json         # Example sheets config
 └── README.md                   # This file
 ```
 

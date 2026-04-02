@@ -8,17 +8,25 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
+	"github.com/conallob/mcp-google-sheets/config"
 	"github.com/conallob/mcp-google-sheets/oauth"
 	"github.com/conallob/mcp-google-sheets/sheets"
-	"google.golang.org/api/option"
-	sheetsapi "google.golang.org/api/sheets/v4"
 )
 
 const (
 	serverName    = "mcp-google-sheets"
-	serverVersion = "1.0.0"
+	serverVersion = "2.0.0"
+
+	// scannerInitBytes is the initial buffer size for the stdin scanner.
+	scannerInitBytes = 64 * 1024 // 64 KiB — sufficient for the vast majority of requests
+	// scannerMaxBytes is the hard ceiling; large batch/write payloads can
+	// exceed bufio's default 64 KiB buffer, so we allow growth up to 16 MiB.
+	scannerMaxBytes = 16 * 1024 * 1024 // 16 MiB
 )
+
+// ── MCP protocol types ────────────────────────────────────────────────────────
 
 type MCPRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -40,35 +48,41 @@ type MCPError struct {
 	Data    interface{} `json:"data,omitempty"`
 }
 
+// ── Server ────────────────────────────────────────────────────────────────────
+
 type MCPServer struct {
 	sheetsClient *sheets.Client
-	ctx          context.Context
+	cfg          *config.Config
+	// ctx is stored here rather than threaded through every handler because the
+	// MCP server's lifetime is tied to a single process invocation; there is no
+	// need for per-request cancellation beyond what the process signal provides.
+	ctx context.Context
 }
 
 func NewMCPServer(ctx context.Context) (*MCPServer, error) {
-	// Load OAuth configuration
-	oauthConfig, err := oauth.LoadConfig()
+	cfg, err := config.Load()
 	if err != nil {
-		return nil, fmt.Errorf("unable to load OAuth configuration: %v", err)
+		return nil, fmt.Errorf("sheets config: %v", err)
 	}
 
-	// Get authenticated HTTP client
-	client, err := oauthConfig.GetClient(ctx)
+	oauthCfg, err := oauth.LoadConfig()
 	if err != nil {
-		return nil, fmt.Errorf("unable to get OAuth client: %v", err)
+		return nil, fmt.Errorf("OAuth config: %v", err)
 	}
 
-	// Create Sheets service with OAuth client
-	srv, err := sheetsapi.NewService(ctx, option.WithHTTPClient(client))
+	httpClient, err := oauthCfg.GetClient(ctx, cfg.NeedsWriteScope())
 	if err != nil {
-		return nil, fmt.Errorf("unable to create sheets service: %v", err)
+		return nil, fmt.Errorf("OAuth: %v", err)
 	}
 
 	return &MCPServer{
-		sheetsClient: sheets.NewClient(srv),
+		sheetsClient: sheets.NewClient(httpClient),
+		cfg:          cfg,
 		ctx:          ctx,
 	}, nil
 }
+
+// ── Request dispatch ──────────────────────────────────────────────────────────
 
 func (s *MCPServer) handleRequest(req MCPRequest) MCPResponse {
 	switch req.Method {
@@ -79,20 +93,12 @@ func (s *MCPServer) handleRequest(req MCPRequest) MCPResponse {
 	case "tools/call":
 		return s.handleToolsCall(req)
 	case "ping":
-		return MCPResponse{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Result:  map[string]interface{}{},
-		}
+		return MCPResponse{JSONRPC: "2.0", ID: req.ID, Result: map[string]interface{}{}}
+	case "notifications/initialized":
+		// MCP post-handshake notification — no response expected or sent.
+		return MCPResponse{}
 	default:
-		return MCPResponse{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Error: &MCPError{
-				Code:    -32601,
-				Message: fmt.Sprintf("Method not found: %s", req.Method),
-			},
-		}
+		return errResponse(req.ID, -32601, fmt.Sprintf("method not found: %s", req.Method))
 	}
 }
 
@@ -113,48 +119,56 @@ func (s *MCPServer) handleInitialize(req MCPRequest) MCPResponse {
 	}
 }
 
+// ── Tool definitions ──────────────────────────────────────────────────────────
+
 func (s *MCPServer) handleToolsList(req MCPRequest) MCPResponse {
 	tools := []map[string]interface{}{
 		{
-			"name":        "read_sheet",
-			"description": "Read data from a Google Sheet. Specify the spreadsheet ID and optional range (e.g., 'Sheet1!A1:D10'). If no range is provided, reads the entire first sheet.",
+			"name":        "list_sheets",
+			"description": "List all Google Sheets this MCP server has been granted access to, along with each sheet's permission level (read or readwrite).",
+			"inputSchema": map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+				"required":   []string{},
+			},
+		},
+		{
+			"name":        "get_spreadsheet_info",
+			"description": "Get metadata about a spreadsheet: title, locale, time zone, and the list of sheet tabs with their dimensions.",
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"spreadsheet_id": map[string]interface{}{
-						"type":        "string",
-						"description": "The ID of the Google Spreadsheet (from the URL)",
-					},
-					"range": map[string]interface{}{
-						"type":        "string",
-						"description": "The A1 notation range to read (e.g., 'Sheet1!A1:D10'). Optional - defaults to entire first sheet.",
-					},
+					"spreadsheet_id": prop("string", "The spreadsheet ID (from its URL)."),
+				},
+				"required": []string{"spreadsheet_id"},
+			},
+		},
+		{
+			"name":        "read_sheet",
+			"description": "Read cell values from a Google Sheet. Returns the values as a 2-D array of strings together with row/column counts. Supply an explicit range when the target tab name is known — omitting range triggers an extra API call to resolve the first sheet tab title.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"spreadsheet_id": prop("string", "The spreadsheet ID (from its URL)."),
+					"range":          prop("string", "A1 notation range, e.g. 'Sheet1!A1:D10'. Defaults to the entire first sheet when omitted."),
 				},
 				"required": []string{"spreadsheet_id"},
 			},
 		},
 		{
 			"name":        "write_sheet",
-			"description": "Write data to a Google Sheet. Specify the spreadsheet ID, range, and data as a 2D array. Data overwrites existing content in the range.",
+			"description": "Overwrite a range of cells in a Google Sheet with the supplied values. Requires readwrite access on the sheet.",
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"spreadsheet_id": map[string]interface{}{
-						"type":        "string",
-						"description": "The ID of the Google Spreadsheet (from the URL)",
-					},
-					"range": map[string]interface{}{
-						"type":        "string",
-						"description": "The A1 notation range to write to (e.g., 'Sheet1!A1:D10')",
-					},
+					"spreadsheet_id": prop("string", "The spreadsheet ID (from its URL)."),
+					"range":          prop("string", "A1 notation range to write to, e.g. 'Sheet1!A1'."),
 					"values": map[string]interface{}{
 						"type":        "array",
-						"description": "2D array of values to write (array of rows, each row is an array of cell values)",
+						"description": "2-D array of values to write (array of rows; each row is an array of cell values).",
 						"items": map[string]interface{}{
-							"type": "array",
-							"items": map[string]interface{}{
-								"type": "string",
-							},
+							"type":  "array",
+							"items": map[string]interface{}{"type": "string"},
 						},
 					},
 				},
@@ -163,26 +177,18 @@ func (s *MCPServer) handleToolsList(req MCPRequest) MCPResponse {
 		},
 		{
 			"name":        "append_sheet",
-			"description": "Append data to a Google Sheet. Adds new rows after the last row with data in the specified range.",
+			"description": "Append rows after the last row that contains data in the given range. Requires readwrite access on the sheet.",
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"spreadsheet_id": map[string]interface{}{
-						"type":        "string",
-						"description": "The ID of the Google Spreadsheet (from the URL)",
-					},
-					"range": map[string]interface{}{
-						"type":        "string",
-						"description": "The A1 notation range (e.g., 'Sheet1!A:D' or 'Sheet1')",
-					},
+					"spreadsheet_id": prop("string", "The spreadsheet ID (from its URL)."),
+					"range":          prop("string", "A1 notation range, e.g. 'Sheet1!A:D' or simply 'Sheet1'."),
 					"values": map[string]interface{}{
 						"type":        "array",
-						"description": "2D array of values to append (array of rows)",
+						"description": "2-D array of rows to append.",
 						"items": map[string]interface{}{
-							"type": "array",
-							"items": map[string]interface{}{
-								"type": "string",
-							},
+							"type":  "array",
+							"items": map[string]interface{}{"type": "string"},
 						},
 					},
 				},
@@ -190,92 +196,43 @@ func (s *MCPServer) handleToolsList(req MCPRequest) MCPResponse {
 			},
 		},
 		{
-			"name":        "create_spreadsheet",
-			"description": "Create a new Google Spreadsheet with the specified title and optional sheet names.",
-			"inputSchema": map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"title": map[string]interface{}{
-						"type":        "string",
-						"description": "The title of the new spreadsheet",
-					},
-					"sheets": map[string]interface{}{
-						"type":        "array",
-						"description": "Optional array of sheet names to create. If not provided, creates one default sheet.",
-						"items": map[string]interface{}{
-							"type": "string",
-						},
-					},
-				},
-				"required": []string{"title"},
-			},
-		},
-		{
-			"name":        "get_spreadsheet_info",
-			"description": "Get metadata about a spreadsheet including title, sheets, and properties.",
-			"inputSchema": map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"spreadsheet_id": map[string]interface{}{
-						"type":        "string",
-						"description": "The ID of the Google Spreadsheet (from the URL)",
-					},
-				},
-				"required": []string{"spreadsheet_id"},
-			},
-		},
-		{
-			"name":        "add_sheet",
-			"description": "Add a new sheet (tab) to an existing spreadsheet.",
-			"inputSchema": map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"spreadsheet_id": map[string]interface{}{
-						"type":        "string",
-						"description": "The ID of the Google Spreadsheet",
-					},
-					"sheet_name": map[string]interface{}{
-						"type":        "string",
-						"description": "The name for the new sheet",
-					},
-				},
-				"required": []string{"spreadsheet_id", "sheet_name"},
-			},
-		},
-		{
 			"name":        "clear_sheet",
-			"description": "Clear all data in a specified range of a Google Sheet.",
+			"description": "Clear all values from a range in a Google Sheet (formatting is preserved). Requires readwrite access.",
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"spreadsheet_id": map[string]interface{}{
-						"type":        "string",
-						"description": "The ID of the Google Spreadsheet",
-					},
-					"range": map[string]interface{}{
-						"type":        "string",
-						"description": "The A1 notation range to clear (e.g., 'Sheet1!A1:D10' or 'Sheet1')",
-					},
+					"spreadsheet_id": prop("string", "The spreadsheet ID (from its URL)."),
+					"range":          prop("string", "A1 notation range to clear, e.g. 'Sheet1!A1:D10' or 'Sheet1'."),
 				},
 				"required": []string{"spreadsheet_id", "range"},
 			},
 		},
 		{
-			"name":        "batch_update",
-			"description": "Perform multiple update operations on a spreadsheet in a single request. Supports formatting, adding sheets, and more complex operations.",
+			"name":        "add_sheet",
+			"description": "Add a new sheet tab to an existing spreadsheet. Requires readwrite access.",
 			"inputSchema": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"spreadsheet_id": map[string]interface{}{
-						"type":        "string",
-						"description": "The ID of the Google Spreadsheet",
-					},
-					"requests": map[string]interface{}{
+					"spreadsheet_id": prop("string", "The spreadsheet ID (from its URL)."),
+					"sheet_name":     prop("string", "Name for the new sheet tab."),
+				},
+				"required": []string{"spreadsheet_id", "sheet_name"},
+			},
+		},
+		{
+			"name":        "create_spreadsheet",
+			"description": "Create a new Google Spreadsheet. Requires at least one sheet configured with readwrite access. The returned spreadsheet ID must be added to the server's config before it can be accessed by other tools.",
+			"inputSchema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"title": prop("string", "Title of the new spreadsheet."),
+					"sheets": map[string]interface{}{
 						"type":        "array",
-						"description": "Array of update request objects (see Google Sheets API documentation for request format)",
+						"description": "Optional list of sheet tab names. A single default sheet is created when omitted.",
+						"items":       map[string]interface{}{"type": "string"},
 					},
 				},
-				"required": []string{"spreadsheet_id", "requests"},
+				"required": []string{"title"},
 			},
 		},
 	}
@@ -283,70 +240,53 @@ func (s *MCPServer) handleToolsList(req MCPRequest) MCPResponse {
 	return MCPResponse{
 		JSONRPC: "2.0",
 		ID:      req.ID,
-		Result: map[string]interface{}{
-			"tools": tools,
-		},
+		Result:  map[string]interface{}{"tools": tools},
 	}
 }
 
+// ── Tool dispatch ─────────────────────────────────────────────────────────────
+
 func (s *MCPServer) handleToolsCall(req MCPRequest) MCPResponse {
-	var params struct {
+	var p struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments"`
 	}
-
-	if err := json.Unmarshal(req.Params, &params); err != nil {
-		return MCPResponse{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Error: &MCPError{
-				Code:    -32602,
-				Message: "Invalid params",
-				Data:    err.Error(),
-			},
-		}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return errResponse(req.ID, -32602, "invalid params: "+err.Error())
 	}
 
-	var result interface{}
-	var err error
-
-	switch params.Name {
-	case "read_sheet":
-		result, err = s.handleReadSheet(params.Arguments)
-	case "write_sheet":
-		result, err = s.handleWriteSheet(params.Arguments)
-	case "append_sheet":
-		result, err = s.handleAppendSheet(params.Arguments)
-	case "create_spreadsheet":
-		result, err = s.handleCreateSpreadsheet(params.Arguments)
+	var (
+		result interface{}
+		err    error
+	)
+	switch p.Name {
+	case "list_sheets":
+		result, err = s.toolListSheets()
 	case "get_spreadsheet_info":
-		result, err = s.handleGetSpreadsheetInfo(params.Arguments)
-	case "add_sheet":
-		result, err = s.handleAddSheet(params.Arguments)
+		result, err = s.toolGetSpreadsheetInfo(p.Arguments)
+	case "read_sheet":
+		result, err = s.toolReadSheet(p.Arguments)
+	case "write_sheet":
+		result, err = s.toolWriteSheet(p.Arguments)
+	case "append_sheet":
+		result, err = s.toolAppendSheet(p.Arguments)
 	case "clear_sheet":
-		result, err = s.handleClearSheet(params.Arguments)
-	case "batch_update":
-		result, err = s.handleBatchUpdate(params.Arguments)
+		result, err = s.toolClearSheet(p.Arguments)
+	case "add_sheet":
+		result, err = s.toolAddSheet(p.Arguments)
+	case "create_spreadsheet":
+		result, err = s.toolCreateSpreadsheet(p.Arguments)
 	default:
-		return MCPResponse{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Error: &MCPError{
-				Code:    -32601,
-				Message: fmt.Sprintf("Tool not found: %s", params.Name),
-			},
-		}
+		return errResponse(req.ID, -32601, fmt.Sprintf("tool not found: %s", p.Name))
 	}
 
 	if err != nil {
-		return MCPResponse{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Error: &MCPError{
-				Code:    -32000,
-				Message: err.Error(),
-			},
-		}
+		return errResponse(req.ID, -32000, err.Error())
+	}
+
+	text, jsonErr := json.Marshal(result)
+	if jsonErr != nil {
+		return errResponse(req.ID, -32000, fmt.Sprintf("failed to encode result: %v", jsonErr))
 	}
 
 	return MCPResponse{
@@ -354,112 +294,171 @@ func (s *MCPServer) handleToolsCall(req MCPRequest) MCPResponse {
 		ID:      req.ID,
 		Result: map[string]interface{}{
 			"content": []map[string]interface{}{
-				{
-					"type": "text",
-					"text": fmt.Sprintf("%v", result),
-				},
+				{"type": "text", "text": string(text)},
 			},
 		},
 	}
 }
 
-func (s *MCPServer) handleReadSheet(args json.RawMessage) (interface{}, error) {
-	var params struct {
+// ── Tool implementations ──────────────────────────────────────────────────────
+
+func (s *MCPServer) toolListSheets() (interface{}, error) {
+	allowed := s.cfg.AllowedSheets()
+	result := make([]map[string]interface{}, len(allowed))
+	for i, sh := range allowed {
+		entry := map[string]interface{}{
+			"id":     sh.ID,
+			"access": string(sh.Access),
+		}
+		if sh.Name != "" {
+			entry["name"] = sh.Name
+		}
+		result[i] = entry
+	}
+	return map[string]interface{}{
+		"sheets": result,
+		"count":  len(result),
+	}, nil
+}
+
+func (s *MCPServer) toolGetSpreadsheetInfo(args json.RawMessage) (interface{}, error) {
+	var p struct {
+		SpreadsheetID string `json:"spreadsheet_id"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return nil, err
+	}
+	if !s.cfg.CanRead(p.SpreadsheetID) {
+		return nil, permissionDenied(p.SpreadsheetID, "read")
+	}
+	return s.sheetsClient.GetSpreadsheetInfo(s.ctx, p.SpreadsheetID)
+}
+
+func (s *MCPServer) toolReadSheet(args json.RawMessage) (interface{}, error) {
+	var p struct {
 		SpreadsheetID string `json:"spreadsheet_id"`
 		Range         string `json:"range,omitempty"`
 	}
-	if err := json.Unmarshal(args, &params); err != nil {
+	if err := json.Unmarshal(args, &p); err != nil {
 		return nil, err
 	}
-	return s.sheetsClient.ReadSheet(s.ctx, params.SpreadsheetID, params.Range)
+	if !s.cfg.CanRead(p.SpreadsheetID) {
+		return nil, permissionDenied(p.SpreadsheetID, "read")
+	}
+	return s.sheetsClient.ReadSheet(s.ctx, p.SpreadsheetID, p.Range)
 }
 
-func (s *MCPServer) handleWriteSheet(args json.RawMessage) (interface{}, error) {
-	var params struct {
+func (s *MCPServer) toolWriteSheet(args json.RawMessage) (interface{}, error) {
+	var p struct {
 		SpreadsheetID string     `json:"spreadsheet_id"`
 		Range         string     `json:"range"`
 		Values        [][]string `json:"values"`
 	}
-	if err := json.Unmarshal(args, &params); err != nil {
+	if err := json.Unmarshal(args, &p); err != nil {
 		return nil, err
 	}
-	return s.sheetsClient.WriteSheet(s.ctx, params.SpreadsheetID, params.Range, params.Values)
+	if len(p.Values) == 0 {
+		return nil, fmt.Errorf("values must not be empty")
+	}
+	if !s.cfg.CanWrite(p.SpreadsheetID) {
+		return nil, permissionDenied(p.SpreadsheetID, "readwrite")
+	}
+	return s.sheetsClient.WriteSheet(s.ctx, p.SpreadsheetID, p.Range, p.Values)
 }
 
-func (s *MCPServer) handleAppendSheet(args json.RawMessage) (interface{}, error) {
-	var params struct {
+func (s *MCPServer) toolAppendSheet(args json.RawMessage) (interface{}, error) {
+	var p struct {
 		SpreadsheetID string     `json:"spreadsheet_id"`
 		Range         string     `json:"range"`
 		Values        [][]string `json:"values"`
 	}
-	if err := json.Unmarshal(args, &params); err != nil {
+	if err := json.Unmarshal(args, &p); err != nil {
 		return nil, err
 	}
-	return s.sheetsClient.AppendSheet(s.ctx, params.SpreadsheetID, params.Range, params.Values)
+	if len(p.Values) == 0 {
+		return nil, fmt.Errorf("values must not be empty")
+	}
+	if !s.cfg.CanWrite(p.SpreadsheetID) {
+		return nil, permissionDenied(p.SpreadsheetID, "readwrite")
+	}
+	return s.sheetsClient.AppendSheet(s.ctx, p.SpreadsheetID, p.Range, p.Values)
 }
 
-func (s *MCPServer) handleCreateSpreadsheet(args json.RawMessage) (interface{}, error) {
-	var params struct {
-		Title  string   `json:"title"`
-		Sheets []string `json:"sheets,omitempty"`
-	}
-	if err := json.Unmarshal(args, &params); err != nil {
-		return nil, err
-	}
-	return s.sheetsClient.CreateSpreadsheet(s.ctx, params.Title, params.Sheets)
-}
-
-func (s *MCPServer) handleGetSpreadsheetInfo(args json.RawMessage) (interface{}, error) {
-	var params struct {
-		SpreadsheetID string `json:"spreadsheet_id"`
-	}
-	if err := json.Unmarshal(args, &params); err != nil {
-		return nil, err
-	}
-	return s.sheetsClient.GetSpreadsheetInfo(s.ctx, params.SpreadsheetID)
-}
-
-func (s *MCPServer) handleAddSheet(args json.RawMessage) (interface{}, error) {
-	var params struct {
-		SpreadsheetID string `json:"spreadsheet_id"`
-		SheetName     string `json:"sheet_name"`
-	}
-	if err := json.Unmarshal(args, &params); err != nil {
-		return nil, err
-	}
-	return s.sheetsClient.AddSheet(s.ctx, params.SpreadsheetID, params.SheetName)
-}
-
-func (s *MCPServer) handleClearSheet(args json.RawMessage) (interface{}, error) {
-	var params struct {
+func (s *MCPServer) toolClearSheet(args json.RawMessage) (interface{}, error) {
+	var p struct {
 		SpreadsheetID string `json:"spreadsheet_id"`
 		Range         string `json:"range"`
 	}
-	if err := json.Unmarshal(args, &params); err != nil {
+	if err := json.Unmarshal(args, &p); err != nil {
 		return nil, err
 	}
-	return s.sheetsClient.ClearSheet(s.ctx, params.SpreadsheetID, params.Range)
+	if !s.cfg.CanWrite(p.SpreadsheetID) {
+		return nil, permissionDenied(p.SpreadsheetID, "readwrite")
+	}
+	return s.sheetsClient.ClearSheet(s.ctx, p.SpreadsheetID, p.Range)
 }
 
-func (s *MCPServer) handleBatchUpdate(args json.RawMessage) (interface{}, error) {
-	var params struct {
-		SpreadsheetID string                   `json:"spreadsheet_id"`
-		Requests      []map[string]interface{} `json:"requests"`
+func (s *MCPServer) toolAddSheet(args json.RawMessage) (interface{}, error) {
+	var p struct {
+		SpreadsheetID string `json:"spreadsheet_id"`
+		SheetName     string `json:"sheet_name"`
 	}
-	if err := json.Unmarshal(args, &params); err != nil {
+	if err := json.Unmarshal(args, &p); err != nil {
 		return nil, err
 	}
-	return s.sheetsClient.BatchUpdate(s.ctx, params.SpreadsheetID, params.Requests)
+	if !s.cfg.CanWrite(p.SpreadsheetID) {
+		return nil, permissionDenied(p.SpreadsheetID, "readwrite")
+	}
+	return s.sheetsClient.AddSheet(s.ctx, p.SpreadsheetID, p.SheetName)
 }
+
+func (s *MCPServer) toolCreateSpreadsheet(args json.RawMessage) (interface{}, error) {
+	var p struct {
+		Title  string   `json:"title"`
+		Sheets []string `json:"sheets,omitempty"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return nil, err
+	}
+	if p.Title == "" {
+		return nil, fmt.Errorf("title is required")
+	}
+	// create_spreadsheet is not tied to a pre-existing spreadsheet ID, so we
+	// can't use CanWrite(id). Instead we gate on NeedsWriteScope(): if any
+	// configured sheet is readwrite the OAuth token carries write permission,
+	// which is sufficient to create a new spreadsheet.
+	if !s.cfg.NeedsWriteScope() {
+		return nil, fmt.Errorf("creating spreadsheets requires at least one sheet configured with readwrite access")
+	}
+	return s.sheetsClient.CreateSpreadsheet(s.ctx, p.Title, p.Sheets)
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+func prop(typ, description string) map[string]interface{} {
+	return map[string]interface{}{"type": typ, "description": description}
+}
+
+func errResponse(id interface{}, code int, msg string) MCPResponse {
+	return MCPResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Error:   &MCPError{Code: code, Message: msg},
+	}
+}
+
+func permissionDenied(spreadsheetID, required string) error {
+	return fmt.Errorf("spreadsheet %q is not in the allowed sheets config (required access: %s)", spreadsheetID, required)
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────────
 
 func main() {
-	// Parse command-line flags
-	versionFlag := flag.Bool("version", false, "Print version information and exit")
+	versionFlag := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
 
-	// Handle --version flag
 	if *versionFlag {
-		fmt.Printf("%s version %s\n", serverName, serverVersion)
+		fmt.Printf("%s %s\n", serverName, serverVersion)
 		os.Exit(0)
 	}
 
@@ -468,10 +467,11 @@ func main() {
 	ctx := context.Background()
 	server, err := NewMCPServer(ctx)
 	if err != nil {
-		log.Fatalf("Failed to create MCP server: %v", err)
+		log.Fatalf("Failed to start MCP server: %v", err)
 	}
 
 	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Buffer(make([]byte, scannerInitBytes), scannerMaxBytes)
 	encoder := json.NewEncoder(os.Stdout)
 
 	for scanner.Scan() {
@@ -482,17 +482,23 @@ func main() {
 
 		var req MCPRequest
 		if err := json.Unmarshal(line, &req); err != nil {
-			log.Printf("Error parsing request: %v", err)
+			log.Printf("Failed to parse request: %v", err)
 			continue
 		}
 
 		resp := server.handleRequest(req)
+		// JSON-RPC 2.0: notifications (absent/null id) must not receive a response.
+		// Also suppress responses for any notification method regardless of id,
+		// since non-compliant clients may send notifications with a non-null id.
+		if req.ID == nil || strings.HasPrefix(req.Method, "notifications/") {
+			continue
+		}
 		if err := encoder.Encode(resp); err != nil {
-			log.Printf("Error encoding response: %v", err)
+			log.Printf("Failed to encode response: %v", err)
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		log.Fatalf("Error reading from stdin: %v", err)
+		log.Fatalf("stdin read error: %v", err)
 	}
 }
