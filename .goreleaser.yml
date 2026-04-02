@@ -48,7 +48,7 @@ archives:
       - LICENSE
       - README.md
       - SETUP.md
-      - credentials.example.json
+      - oauth_credentials.example.json
 
 checksum:
   name_template: 'checksums.txt'
